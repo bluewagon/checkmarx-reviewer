@@ -1,0 +1,11 @@
+# Binaries
+/checkmarx-reviewer
+*.exe
+
+# Local env and generated reports
+.env
+checkmarx-ai-review.json
+*.report.json
+
+# OS/editor
+.DS_Store
