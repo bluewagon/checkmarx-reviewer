@@ -38,7 +38,8 @@ type FindingResult struct {
 type Report struct {
 	ScanID         string          `json:"scanId"`
 	ProjectID      string          `json:"projectId"`
-	Model          string          `json:"model"`
+	Agent          string          `json:"agent"`
+	Model          string          `json:"model,omitempty"`
 	FPThreshold    float64         `json:"fpConfidenceThreshold"`
 	DryRun         bool            `json:"dryRun"`
 	GeneratedAt    time.Time       `json:"generatedAt"`

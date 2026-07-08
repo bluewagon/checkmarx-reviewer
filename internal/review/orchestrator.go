@@ -30,6 +30,7 @@ type CheckmarxClient interface {
 // Options configure a run.
 type Options struct {
 	ScanID      string
+	Agent       string
 	Model       string
 	FPThreshold float64
 	DryRun      bool
@@ -72,6 +73,7 @@ func (o *Orchestrator) Run(ctx context.Context) (*report.Report, error) {
 	rep := &report.Report{
 		ScanID:        o.opts.ScanID,
 		ProjectID:     scan.ProjectID,
+		Agent:         o.opts.Agent,
 		Model:         o.opts.Model,
 		FPThreshold:   o.opts.FPThreshold,
 		DryRun:        o.opts.DryRun,
@@ -142,7 +144,7 @@ func (o *Orchestrator) reviewOne(ctx context.Context, projectID string, res chec
 		fr.StateSet = state
 	}
 
-	comment := formatComment(verdict, o.opts.Model)
+	comment := formatComment(verdict, o.opts.Agent, o.opts.Model)
 
 	if o.opts.DryRun {
 		return fr
@@ -209,17 +211,21 @@ func alreadyReviewed(history []checkmarx.Predicate) bool {
 }
 
 // formatComment renders the comment posted to Checkmarx.
-func formatComment(v ai.Verdict, model string) string {
+func formatComment(v ai.Verdict, agent, model string) string {
 	label := "TRUE POSITIVE"
 	if v.IsFalsePositive() {
 		label = "FALSE POSITIVE"
 	}
-	return fmt.Sprintf("%s %s — confidence %d%%\n%s\n—\nmodel=%s · reviewed %s · checkmarx-reviewer",
+	via := agent
+	if model != "" {
+		via = agent + " (" + model + ")"
+	}
+	return fmt.Sprintf("%s %s — confidence %d%%\n%s\n—\nvia=%s · reviewed %s · checkmarx-reviewer",
 		commentMarker,
 		label,
 		int(v.Confidence*100+0.5),
 		strings.TrimSpace(v.Explanation),
-		model,
+		via,
 		time.Now().UTC().Format("2006-01-02"),
 	)
 }

@@ -1,9 +1,12 @@
-// Package ai defines the finding reviewer abstraction and its Anthropic-backed
+// Package ai defines the finding reviewer abstraction and a CLI-agent-backed
 // implementation. The reviewer decides whether a SAST finding is a true or false
 // positive, with a confidence and explanation.
 package ai
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // Verdict classifications returned by the model.
 const (
@@ -46,4 +49,20 @@ func (v Verdict) IsFalsePositive() bool { return v.Verdict == VerdictFalsePositi
 // use; the orchestrator calls Review once per finding.
 type Reviewer interface {
 	Review(ctx context.Context, f Finding) (Verdict, error)
+}
+
+// normalize validates and clamps a verdict produced by an agent.
+func normalize(v Verdict) (Verdict, error) {
+	switch v.Verdict {
+	case VerdictTruePositive, VerdictFalsePositive:
+	default:
+		return Verdict{}, fmt.Errorf("invalid verdict %q", v.Verdict)
+	}
+	if v.Confidence < 0 {
+		v.Confidence = 0
+	}
+	if v.Confidence > 1 {
+		v.Confidence = 1
+	}
+	return v, nil
 }

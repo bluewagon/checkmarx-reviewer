@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-const systemPrompt = `You are a senior application security engineer performing SAST triage.
+const promptPreamble = `You are a senior application security engineer performing SAST triage.
 You are given a single Checkmarx SAST finding: its query (vulnerability type), the
 source-to-sink data-flow path, and the actual source code around each node.
 
@@ -16,13 +16,18 @@ this context).
 
 Reason strictly from the code shown. Trace whether attacker-controllable input actually
 reaches the sink without adequate neutralization. If the provided code is insufficient
-to be sure, lower your confidence rather than guessing.
+to be sure, lower your confidence rather than guessing.`
 
-Return your judgment ONLY by calling the submit_verdict tool.`
+const promptInstruction = `Respond with ONLY a single JSON object and nothing else — no prose, no markdown, no code fences. Use exactly this shape:
+{"verdict": "TRUE_POSITIVE" | "FALSE_POSITIVE", "confidence": <number between 0 and 1>, "explanation": "<concise justification grounded in the shown code, 2-5 sentences>"}`
 
-// buildUserPrompt renders the finding into the user message text.
-func buildUserPrompt(f Finding) string {
+// buildPrompt renders the full self-contained prompt sent to the agent CLI. The
+// agent has no tools and no repo access — all evidence is inlined here.
+func buildPrompt(f Finding) string {
 	var b strings.Builder
+
+	b.WriteString(promptPreamble)
+	b.WriteString("\n\n--- FINDING ---\n")
 
 	fmt.Fprintf(&b, "Vulnerability: %s\n", f.QueryName)
 	if f.Group != "" {
@@ -57,6 +62,7 @@ func buildUserPrompt(f Finding) string {
 		}
 	}
 
-	b.WriteString("\nDecide TRUE_POSITIVE vs FALSE_POSITIVE and call submit_verdict.")
+	b.WriteString("\n--- END FINDING ---\n\n")
+	b.WriteString(promptInstruction)
 	return b.String()
 }

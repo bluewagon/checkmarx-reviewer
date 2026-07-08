@@ -1,0 +1,238 @@
+package ai
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os/exec"
+	"strings"
+	"time"
+)
+
+// Supported agent CLIs.
+const (
+	AgentClaude  = "claude"  // Claude Code CLI (`claude`)
+	AgentCopilot = "copilot" // GitHub Copilot CLI (`copilot`)
+)
+
+// DefaultAgentTimeout bounds a single agent invocation.
+const DefaultAgentTimeout = 180 * time.Second
+
+// agentSpec describes how to drive one CLI agent in non-interactive mode.
+type agentSpec struct {
+	bin            string
+	defaultModel   string
+	promptViaStdin bool // pass the prompt on stdin vs. as the final arg
+	args           func(model string) []string
+	extract        func(stdout []byte) string // pull the assistant text out of stdout
+}
+
+var agentSpecs = map[string]agentSpec{
+	// claude -p --output-format json [--model M]   (prompt on stdin)
+	AgentClaude: {
+		bin:            "claude",
+		defaultModel:   "claude-opus-4-8",
+		promptViaStdin: true,
+		args: func(model string) []string {
+			a := []string{"-p", "--output-format", "json"}
+			if model != "" {
+				a = append(a, "--model", model)
+			}
+			return a
+		},
+		extract: extractClaudeResult,
+	},
+	// copilot [--model M] --allow-all-tools -p "<prompt>"
+	AgentCopilot: {
+		bin:            "copilot",
+		defaultModel:   "", // let Copilot use its configured default
+		promptViaStdin: false,
+		args: func(model string) []string {
+			var a []string
+			if model != "" {
+				a = append(a, "--model", model)
+			}
+			return append(a, "--allow-all-tools", "-p")
+		},
+		extract: func(b []byte) string { return string(b) },
+	},
+}
+
+// SupportedAgents lists the agent identifiers accepted by NewCLIReviewer.
+func SupportedAgents() []string { return []string{AgentClaude, AgentCopilot} }
+
+// runner executes a command; abstracted so tests can inject a fake.
+type runner func(ctx context.Context, bin string, args []string, stdin []byte) (stdout, stderr []byte, err error)
+
+// CLIReviewer implements Reviewer by shelling out to an AI agent CLI. The agent
+// is given a fully self-contained prompt and must reply with a JSON verdict.
+type CLIReviewer struct {
+	agent   string
+	spec    agentSpec
+	bin     string
+	model   string
+	timeout time.Duration
+	run     runner
+}
+
+// NewCLIReviewer builds a reviewer for the named agent ("claude" or "copilot").
+// model may be empty to use the agent's default. binOverride, when non-empty,
+// replaces the default binary name. It verifies the binary is on PATH.
+func NewCLIReviewer(agent, model, binOverride string, timeout time.Duration) (*CLIReviewer, error) {
+	spec, ok := agentSpecs[agent]
+	if !ok {
+		return nil, fmt.Errorf("unknown agent %q (supported: %s)", agent, strings.Join(SupportedAgents(), ", "))
+	}
+	bin := spec.bin
+	if binOverride != "" {
+		bin = binOverride
+	}
+	if _, err := exec.LookPath(bin); err != nil {
+		return nil, fmt.Errorf("agent CLI %q not found on PATH: %w", bin, err)
+	}
+	if model == "" {
+		model = spec.defaultModel
+	}
+	if timeout <= 0 {
+		timeout = DefaultAgentTimeout
+	}
+	return &CLIReviewer{agent: agent, spec: spec, bin: bin, model: model, timeout: timeout, run: execRunner}, nil
+}
+
+// Model returns the effective model (may be empty for an agent default).
+func (r *CLIReviewer) Model() string { return r.model }
+
+// Agent returns the agent identifier.
+func (r *CLIReviewer) Agent() string { return r.agent }
+
+// Review runs the agent on one finding and parses its JSON verdict.
+func (r *CLIReviewer) Review(ctx context.Context, f Finding) (Verdict, error) {
+	prompt := buildPrompt(f)
+
+	args := r.spec.args(r.model)
+	var stdin []byte
+	if r.spec.promptViaStdin {
+		stdin = []byte(prompt)
+	} else {
+		args = append(args, prompt)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
+	stdout, stderr, err := r.run(ctx, r.bin, args, stdin)
+	if err != nil {
+		return Verdict{}, fmt.Errorf("%s invocation failed: %w: %s", r.agent, err, truncate(string(stderr), 500))
+	}
+
+	text := r.spec.extract(stdout)
+	v, err := extractVerdict(text)
+	if err != nil {
+		return Verdict{}, fmt.Errorf("%s: %w; output was: %s", r.agent, err, truncate(text, 500))
+	}
+	return normalize(v)
+}
+
+// execRunner is the production runner backed by os/exec.
+func execRunner(ctx context.Context, bin string, args []string, stdin []byte) ([]byte, []byte, error) {
+	cmd := exec.CommandContext(ctx, bin, args...)
+	if len(stdin) > 0 {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	err := cmd.Run()
+	return out.Bytes(), errb.Bytes(), err
+}
+
+// extractClaudeResult unwraps Claude Code's `--output-format json` envelope to
+// the assistant's text. Falls back to the raw bytes if it isn't that envelope.
+func extractClaudeResult(stdout []byte) string {
+	var env struct {
+		Result  string `json:"result"`
+		IsError bool   `json:"is_error"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(stdout), &env); err == nil && env.Result != "" {
+		return env.Result
+	}
+	return string(stdout)
+}
+
+// extractVerdict parses a Verdict from agent output that may contain surrounding
+// prose or code fences: it tries the whole string first, then the last balanced
+// JSON object that carries a "verdict" field.
+func extractVerdict(text string) (Verdict, error) {
+	if v, ok := tryVerdict(strings.TrimSpace(text)); ok {
+		return v, nil
+	}
+	objs := jsonObjects(text)
+	for i := len(objs) - 1; i >= 0; i-- {
+		if v, ok := tryVerdict(objs[i]); ok {
+			return v, nil
+		}
+	}
+	return Verdict{}, fmt.Errorf("no JSON verdict object found in agent output")
+}
+
+// tryVerdict reports whether s is a JSON object with a non-empty verdict field.
+func tryVerdict(s string) (Verdict, bool) {
+	var v Verdict
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		return Verdict{}, false
+	}
+	if v.Verdict == "" {
+		return Verdict{}, false
+	}
+	return v, true
+}
+
+// jsonObjects returns the top-level {...} substrings in s, honoring string
+// literals and escapes so braces inside strings don't break balance tracking.
+func jsonObjects(s string) []string {
+	var objs []string
+	depth := 0
+	start := -1
+	inStr := false
+	escaped := false
+	for i, r := range s {
+		if inStr {
+			switch {
+			case escaped:
+				escaped = false
+			case r == '\\':
+				escaped = true
+			case r == '"':
+				inStr = false
+			}
+			continue
+		}
+		switch r {
+		case '"':
+			inStr = true
+		case '{':
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		case '}':
+			if depth > 0 {
+				depth--
+				if depth == 0 && start >= 0 {
+					objs = append(objs, s[start:i+1])
+					start = -1
+				}
+			}
+		}
+	}
+	return objs
+}
+
+func truncate(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}

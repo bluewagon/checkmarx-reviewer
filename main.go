@@ -43,12 +43,16 @@ func run(args []string) error {
 		Tenant:  cfg.Tenant,
 		APIKey:  cfg.APIKey,
 	})
-	reviewer := ai.NewAnthropicReviewer(cfg.AnthropicAPIKey, cfg.Model)
+	reviewer, err := ai.NewCLIReviewer(cfg.Agent, cfg.Model, cfg.AgentBin, cfg.AgentTimeout)
+	if err != nil {
+		return err
+	}
 	reader := source.NewReader(cfg.RepoPath, cfg.ContextLines)
 
 	orch := review.New(cx, reviewer, reader, review.Options{
 		ScanID:      cfg.ScanID,
-		Model:       cfg.Model,
+		Agent:       cfg.Agent,
+		Model:       reviewer.Model(),
 		FPThreshold: cfg.FPThreshold,
 		DryRun:      cfg.DryRun,
 	}, logf)

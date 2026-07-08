@@ -48,9 +48,9 @@ func TestBuildUserPromptIncludesEvidence(t *testing.T) {
 			{Order: 2, FileName: "b.go", Line: 20, Name: "query", Snippet: "file not found", Resolved: false},
 		},
 	}
-	got := buildUserPrompt(f)
+	got := buildPrompt(f)
 
-	for _, want := range []string{"SQL_Injection", "a.go:10", "b.go:20", "req", "submit_verdict", "source unavailable"} {
+	for _, want := range []string{"SQL_Injection", "a.go:10", "b.go:20", "req", "\"verdict\"", "source unavailable"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("prompt missing %q\n---\n%s", want, got)
 		}

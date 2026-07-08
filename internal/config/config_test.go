@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/bluewagon/checkmarx-reviewer/internal/ai"
 )
 
 func setEnv(t *testing.T) {
@@ -10,7 +12,10 @@ func setEnv(t *testing.T) {
 	t.Setenv("CX_APIKEY", "key")
 	t.Setenv("CX_BASE_URI", "https://us.ast.checkmarx.net/")
 	t.Setenv("CX_TENANT", "acme")
-	t.Setenv("ANTHROPIC_API_KEY", "sk-ant")
+	// Ensure a clean agent selection regardless of the host environment.
+	t.Setenv("CX_AI_AGENT", "")
+	t.Setenv("CX_AI_MODEL", "")
+	t.Setenv("CX_AI_AGENT_BIN", "")
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -19,7 +24,13 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Model != DefaultModel || cfg.FPThreshold != DefaultFPThreshold || cfg.ContextLines != DefaultContextLines {
+	if cfg.Agent != ai.AgentClaude {
+		t.Errorf("default agent = %q, want %q", cfg.Agent, ai.AgentClaude)
+	}
+	if cfg.Model != "" {
+		t.Errorf("model should default to empty (agent default), got %q", cfg.Model)
+	}
+	if cfg.FPThreshold != DefaultFPThreshold || cfg.ContextLines != DefaultContextLines {
 		t.Errorf("defaults not applied: %+v", cfg)
 	}
 	if cfg.BaseURI != "https://us.ast.checkmarx.net" {
@@ -32,15 +43,22 @@ func TestLoadMissingRequired(t *testing.T) {
 	t.Setenv("CX_APIKEY", "")
 	t.Setenv("CX_BASE_URI", "")
 	t.Setenv("CX_TENANT", "")
-	t.Setenv("ANTHROPIC_API_KEY", "")
 	_, err := Load(nil)
 	if err == nil {
 		t.Fatal("expected error for missing config")
 	}
-	for _, want := range []string{"--scan-id", "--repo-path", "CX_APIKEY", "ANTHROPIC_API_KEY"} {
+	for _, want := range []string{"--scan-id", "--repo-path", "CX_APIKEY"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q should mention %q", err, want)
 		}
+	}
+}
+
+func TestLoadRejectsUnknownAgent(t *testing.T) {
+	setEnv(t)
+	_, err := Load([]string{"--scan-id", "s", "--repo-path", t.TempDir(), "--agent", "gemini"})
+	if err == nil || !strings.Contains(err.Error(), "agent") {
+		t.Fatalf("expected agent error, got %v", err)
 	}
 }
 
