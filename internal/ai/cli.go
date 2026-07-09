@@ -25,7 +25,9 @@ type agentSpec struct {
 	defaultModel   string
 	promptViaStdin bool // pass the prompt on stdin vs. as the final arg
 	args           func(model string) []string
-	extract        func(stdout []byte) string // pull the assistant text out of stdout
+	// extract pulls the assistant text and any reported token/cost usage out of
+	// stdout. Agents that report no usage return a zero Usage.
+	extract func(stdout []byte) (string, Usage)
 }
 
 var agentSpecs = map[string]agentSpec{
@@ -55,7 +57,7 @@ var agentSpecs = map[string]agentSpec{
 			}
 			return append(a, "--allow-all-tools", "-p")
 		},
-		extract: func(b []byte) string { return string(b) },
+		extract: func(b []byte) (string, Usage) { return string(b), Usage{} },
 	},
 }
 
@@ -106,9 +108,15 @@ func (r *CLIReviewer) Model() string { return r.model }
 // Agent returns the agent identifier.
 func (r *CLIReviewer) Agent() string { return r.agent }
 
-// Review runs the agent on one finding and parses its JSON verdict.
-func (r *CLIReviewer) Review(ctx context.Context, f Finding) (Verdict, error) {
-	prompt := buildPrompt(f)
+// Review runs the agent on a batch of findings in one invocation and returns the
+// parsed, normalized verdicts keyed by Finding.ID. Verdicts that fail validation
+// are dropped from the map (the caller re-reviews or records them as errors).
+func (r *CLIReviewer) Review(ctx context.Context, findings []Finding) (map[string]Verdict, Usage, error) {
+	if len(findings) == 0 {
+		return map[string]Verdict{}, Usage{}, nil
+	}
+
+	prompt := buildBatchPrompt(findings)
 
 	args := r.spec.args(r.model)
 	var stdin []byte
@@ -123,15 +131,33 @@ func (r *CLIReviewer) Review(ctx context.Context, f Finding) (Verdict, error) {
 
 	stdout, stderr, err := r.run(ctx, r.bin, args, stdin)
 	if err != nil {
-		return Verdict{}, fmt.Errorf("%s invocation failed: %w: %s", r.agent, err, truncate(string(stderr), 500))
+		return nil, Usage{}, fmt.Errorf("%s invocation failed: %w: %s", r.agent, err, truncate(string(stderr), 500))
 	}
 
-	text := r.spec.extract(stdout)
-	v, err := extractVerdict(text)
+	text, usage := r.spec.extract(stdout)
+	verdicts, err := extractVerdicts(text)
 	if err != nil {
-		return Verdict{}, fmt.Errorf("%s: %w; output was: %s", r.agent, err, truncate(text, 500))
+		return nil, usage, fmt.Errorf("%s: %w; output was: %s", r.agent, err, truncate(text, 500))
 	}
-	return normalize(v)
+
+	// Single-item robustness: if the agent omitted the id, backfill it.
+	if len(findings) == 1 && len(verdicts) == 1 && verdicts[0].ID == "" {
+		verdicts[0].ID = findings[0].ID
+	}
+
+	out := make(map[string]Verdict, len(verdicts))
+	for _, v := range verdicts {
+		if v.ID == "" {
+			continue
+		}
+		nv, err := normalize(v)
+		if err != nil {
+			continue // invalid verdict: leave absent so the caller recovers
+		}
+		nv.ID = v.ID
+		out[v.ID] = nv
+	}
+	return out, usage, nil
 }
 
 // execRunner is the production runner backed by os/exec.
@@ -148,32 +174,72 @@ func execRunner(ctx context.Context, bin string, args []string, stdin []byte) ([
 }
 
 // extractClaudeResult unwraps Claude Code's `--output-format json` envelope to
-// the assistant's text. Falls back to the raw bytes if it isn't that envelope.
-func extractClaudeResult(stdout []byte) string {
+// the assistant's text plus the token/cost usage it reports. Falls back to the
+// raw bytes with zero usage if it isn't that envelope.
+func extractClaudeResult(stdout []byte) (string, Usage) {
 	var env struct {
-		Result  string `json:"result"`
-		IsError bool   `json:"is_error"`
+		Result  string  `json:"result"`
+		IsError bool    `json:"is_error"`
+		CostUSD float64 `json:"total_cost_usd"`
+		Usage   struct {
+			InputTokens              int `json:"input_tokens"`
+			OutputTokens             int `json:"output_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(bytes.TrimSpace(stdout), &env); err == nil && env.Result != "" {
-		return env.Result
-	}
-	return string(stdout)
-}
-
-// extractVerdict parses a Verdict from agent output that may contain surrounding
-// prose or code fences: it tries the whole string first, then the last balanced
-// JSON object that carries a "verdict" field.
-func extractVerdict(text string) (Verdict, error) {
-	if v, ok := tryVerdict(strings.TrimSpace(text)); ok {
-		return v, nil
-	}
-	objs := jsonObjects(text)
-	for i := len(objs) - 1; i >= 0; i-- {
-		if v, ok := tryVerdict(objs[i]); ok {
-			return v, nil
+		return env.Result, Usage{
+			InputTokens:              env.Usage.InputTokens,
+			OutputTokens:             env.Usage.OutputTokens,
+			CacheCreationInputTokens: env.Usage.CacheCreationInputTokens,
+			CacheReadInputTokens:     env.Usage.CacheReadInputTokens,
+			CostUSD:                  env.CostUSD,
 		}
 	}
-	return Verdict{}, fmt.Errorf("no JSON verdict object found in agent output")
+	return string(stdout), Usage{}
+}
+
+// extractVerdicts parses one or more Verdicts from agent output that may contain
+// surrounding prose or code fences: it tries a top-level JSON array first, then
+// falls back to collecting every balanced JSON object that carries a "verdict".
+func extractVerdicts(text string) ([]Verdict, error) {
+	if arr, ok := tryVerdictArray(text); ok {
+		return arr, nil
+	}
+	var out []Verdict
+	for _, obj := range jsonObjects(text) {
+		if v, ok := tryVerdict(obj); ok {
+			out = append(out, v)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no JSON verdict object found in agent output")
+	}
+	return out, nil
+}
+
+// tryVerdictArray attempts to unmarshal the first top-level [...] as []Verdict.
+func tryVerdictArray(text string) ([]Verdict, bool) {
+	raw, ok := firstJSONArray(text)
+	if !ok {
+		return nil, false
+	}
+	var arr []Verdict
+	if err := json.Unmarshal([]byte(raw), &arr); err != nil {
+		return nil, false
+	}
+	// Keep only objects that actually carry a verdict.
+	var out []Verdict
+	for _, v := range arr {
+		if v.Verdict != "" {
+			out = append(out, v)
+		}
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
 }
 
 // tryVerdict reports whether s is a JSON object with a non-empty verdict field.
@@ -227,6 +293,45 @@ func jsonObjects(s string) []string {
 		}
 	}
 	return objs
+}
+
+// firstJSONArray returns the first top-level [...] substring in s, honoring
+// string literals and escapes so brackets inside strings don't break balance.
+func firstJSONArray(s string) (string, bool) {
+	depth := 0
+	start := -1
+	inStr := false
+	escaped := false
+	for i, r := range s {
+		if inStr {
+			switch {
+			case escaped:
+				escaped = false
+			case r == '\\':
+				escaped = true
+			case r == '"':
+				inStr = false
+			}
+			continue
+		}
+		switch r {
+		case '"':
+			inStr = true
+		case '[':
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		case ']':
+			if depth > 0 {
+				depth--
+				if depth == 0 && start >= 0 {
+					return s[start : i+1], true
+				}
+			}
+		}
+	}
+	return "", false
 }
 
 func truncate(s string, n int) string {

@@ -29,11 +29,13 @@ type CheckmarxClient interface {
 
 // Options configure a run.
 type Options struct {
-	ScanID      string
-	Agent       string
-	Model       string
-	FPThreshold float64
-	DryRun      bool
+	ScanID       string
+	Agent        string
+	Model        string
+	BatchSize    int
+	FPThreshold  float64
+	CostLimitUSD float64 // stop the run once cumulative AI cost exceeds this (0 = no limit)
+	DryRun       bool
 }
 
 // Logger is a minimal progress sink (satisfied by log.Printf-style functions).
@@ -41,11 +43,12 @@ type Logger func(format string, args ...any)
 
 // Orchestrator wires the collaborators together.
 type Orchestrator struct {
-	cx   CheckmarxClient
-	rev  ai.Reviewer
-	src  *source.Reader
-	opts Options
-	logf Logger
+	cx    CheckmarxClient
+	rev   ai.Reviewer
+	src   *source.Reader
+	opts  Options
+	logf  Logger
+	spent ai.Usage // cumulative token/cost usage across all AI calls this run
 }
 
 // New creates an Orchestrator. logf may be nil.
@@ -54,6 +57,24 @@ func New(cx CheckmarxClient, rev ai.Reviewer, src *source.Reader, opts Options, 
 		logf = func(string, ...any) {}
 	}
 	return &Orchestrator{cx: cx, rev: rev, src: src, opts: opts, logf: logf}
+}
+
+// recordUsage accumulates one AI call's usage into the run total and logs it.
+func (o *Orchestrator) recordUsage(u ai.Usage) {
+	if u == (ai.Usage{}) {
+		return // agent reported no usage (e.g. Copilot, or a failed call)
+	}
+	o.spent.Add(u)
+	o.logf("AI call: +$%.4f (in=%d out=%d cache=%d) — run total $%.4f, %d tokens",
+		u.CostUSD, u.InputTokens, u.OutputTokens,
+		u.CacheCreationInputTokens+u.CacheReadInputTokens,
+		o.spent.CostUSD, o.spent.TotalTokens())
+}
+
+// overBudget reports whether the cumulative cost has reached the configured
+// limit. A limit of 0 (or less) disables the check.
+func (o *Orchestrator) overBudget() bool {
+	return o.opts.CostLimitUSD > 0 && o.spent.CostUSD >= o.opts.CostLimitUSD
 }
 
 // Run executes the pipeline and returns the report. It returns an error only for
@@ -75,28 +96,64 @@ func (o *Orchestrator) Run(ctx context.Context) (*report.Report, error) {
 		ProjectID:     scan.ProjectID,
 		Agent:         o.opts.Agent,
 		Model:         o.opts.Model,
+		BatchSize:     o.opts.BatchSize,
 		FPThreshold:   o.opts.FPThreshold,
 		DryRun:        o.opts.DryRun,
 		GeneratedAt:   time.Now().UTC(),
 		TotalFindings: len(results),
 	}
 
-	o.logf("Reviewing %d HIGH/To-Verify findings for scan %s (project %s)", len(results), o.opts.ScanID, scan.ProjectID)
+	o.logf("Reviewing %d HIGH/To-Verify findings for scan %s (project %s), batch size %d",
+		len(results), o.opts.ScanID, scan.ProjectID, o.opts.BatchSize)
 
+	// Phase 1: prepare each finding (idempotency check + source evidence).
+	items := make([]*item, len(results))
 	for i, res := range results {
-		o.logf("[%d/%d] %s (%s)", i+1, len(results), res.Data.QueryName, res.SimilarityID)
-		fr := o.reviewOne(ctx, scan.ProjectID, res)
-		tally(rep, fr)
-		rep.Findings = append(rep.Findings, fr)
+		items[i] = o.prepare(ctx, scan.ProjectID, res)
+	}
+
+	// Phase 2: review non-terminal findings in bounded batches, with per-finding
+	// fallback for anything a batch fails to answer. Stops early on cost limit.
+	aborted := o.reviewBatches(ctx, items)
+
+	// Phase 3: act on verdicts and assemble the report (original order preserved).
+	for _, it := range items {
+		if !it.terminal && it.hasVerdict {
+			o.applyVerdict(ctx, it)
+		}
+		tally(rep, it.fr)
+		rep.Findings = append(rep.Findings, it.fr)
+	}
+
+	// Record token/cost totals and any cost-limit abort on the report.
+	rep.CostLimitUSD = o.opts.CostLimitUSD
+	rep.EstimatedCostUSD = o.spent.CostUSD
+	rep.InputTokens = o.spent.InputTokens
+	rep.OutputTokens = o.spent.OutputTokens
+	rep.TotalTokens = o.spent.TotalTokens()
+	if aborted {
+		rep.Aborted = true
+		rep.AbortReason = fmt.Sprintf("cost limit $%.2f reached (spent $%.4f)", o.opts.CostLimitUSD, o.spent.CostUSD)
 	}
 
 	return rep, nil
 }
 
-// reviewOne processes a single finding, never returning an error (outcomes are
-// captured in the FindingResult).
-func (o *Orchestrator) reviewOne(ctx context.Context, projectID string, res checkmarx.Result) report.FindingResult {
-	fr := report.FindingResult{
+// item is the per-finding working state threaded through the pipeline phases.
+type item struct {
+	res        checkmarx.Result
+	projectID  string
+	finding    ai.Finding
+	fr         report.FindingResult
+	verdict    ai.Verdict
+	hasVerdict bool
+	terminal   bool // skipped or errored before/without AI review
+}
+
+// prepare runs the idempotency check and builds source evidence for one finding.
+func (o *Orchestrator) prepare(ctx context.Context, projectID string, res checkmarx.Result) *item {
+	it := &item{res: res, projectID: projectID}
+	it.fr = report.FindingResult{
 		SimilarityID: res.SimilarityID,
 		ResultHash:   res.ResultHash,
 		QueryName:    res.Data.QueryName,
@@ -104,66 +161,164 @@ func (o *Orchestrator) reviewOne(ctx context.Context, projectID string, res chec
 		NodesTotal:   len(res.Data.Nodes),
 	}
 	if sink := sinkNode(res); sink != nil {
-		fr.SinkFile = sink.FileName
-		fr.SinkLine = sink.Line
+		it.fr.SinkFile = sink.FileName
+		it.fr.SinkLine = sink.Line
 	}
 
-	// Idempotency: skip if we've already reviewed this finding.
 	history, err := o.cx.GetPredicateHistory(ctx, res.SimilarityID, projectID)
 	if err != nil {
-		fr.Action = report.ActionError
-		fr.Error = fmt.Sprintf("fetching predicate history: %v", err)
-		return fr
+		it.fr.Action = report.ActionError
+		it.fr.Error = fmt.Sprintf("fetching predicate history: %v", err)
+		it.terminal = true
+		return it
 	}
 	if alreadyReviewed(history) {
-		fr.Action = report.ActionSkippedAlreadyDone
-		return fr
+		it.fr.Action = report.ActionSkippedAlreadyDone
+		it.terminal = true
+		return it
 	}
 
-	// Build evidence from source.
 	finding, resolved := o.buildFinding(res)
-	fr.NodesResolved = resolved
+	it.finding = finding
+	it.fr.NodesResolved = resolved
+	return it
+}
 
-	// Ask the model.
-	verdict, err := o.rev.Review(ctx, finding)
+// reviewBatches chunks the non-terminal items and reviews each batch. It stops
+// early once the cost limit is exceeded, marking any not-yet-reviewed findings as
+// budget-skipped, and reports whether it aborted for that reason.
+func (o *Orchestrator) reviewBatches(ctx context.Context, items []*item) bool {
+	var pending []*item
+	for _, it := range items {
+		if !it.terminal {
+			pending = append(pending, it)
+		}
+	}
+	if len(pending) == 0 {
+		return false
+	}
+
+	size := max(o.opts.BatchSize, 1)
+
+	batchNum := 0
+	for start := 0; start < len(pending); start += size {
+		end := min(start+size, len(pending))
+		batchNum++
+		o.logf("Reviewing batch %d (%d finding(s))", batchNum, end-start)
+		o.reviewBatch(ctx, pending[start:end])
+
+		if o.overBudget() {
+			o.logf("Cost limit reached ($%.4f >= $%.2f); stopping. %d finding(s) left unreviewed.",
+				o.spent.CostUSD, o.opts.CostLimitUSD, len(pending)-end)
+			markBudgetSkipped(pending[end:])
+			return true
+		}
+	}
+	return false
+}
+
+// markBudgetSkipped records findings left unreviewed because the cost limit was
+// hit, so they appear in the report rather than silently disappearing.
+func markBudgetSkipped(items []*item) {
+	for _, it := range items {
+		if it.terminal || it.hasVerdict {
+			continue
+		}
+		it.fr.Action = report.ActionSkippedBudget
+		it.terminal = true
+	}
+}
+
+// reviewBatch reviews one batch in a single agent call, falling back to
+// individual review for any finding the batch does not answer.
+func (o *Orchestrator) reviewBatch(ctx context.Context, batch []*item) {
+	findings := make([]ai.Finding, len(batch))
+	byID := make(map[string]*item, len(batch))
+	for i, it := range batch {
+		findings[i] = it.finding
+		byID[it.finding.ID] = it
+	}
+
+	verdicts, usage, err := o.rev.Review(ctx, findings)
+	o.recordUsage(usage)
 	if err != nil {
-		fr.Action = report.ActionError
-		fr.Error = fmt.Sprintf("ai review: %v", err)
-		return fr
+		o.logf("batch review failed (%v); falling back to individual review", err)
+		for _, it := range batch {
+			o.reviewIndividually(ctx, it)
+		}
+		return
 	}
-	fr.Verdict = verdict.Verdict
-	fr.Confidence = verdict.Confidence
-	fr.Explanation = verdict.Explanation
 
-	// Decide action.
+	for id, v := range verdicts {
+		if it, ok := byID[id]; ok {
+			it.verdict = v
+			it.hasVerdict = true
+		}
+	}
+	for _, it := range batch {
+		if !it.hasVerdict {
+			o.reviewIndividually(ctx, it)
+		}
+	}
+}
+
+// reviewIndividually re-reviews a single finding (batch of one). On failure the
+// finding is marked terminal with an ERROR outcome.
+func (o *Orchestrator) reviewIndividually(ctx context.Context, it *item) {
+	verdicts, usage, err := o.rev.Review(ctx, []ai.Finding{it.finding})
+	o.recordUsage(usage)
+	if err != nil {
+		it.fr.Action = report.ActionError
+		it.fr.Error = fmt.Sprintf("ai review: %v", err)
+		it.terminal = true
+		return
+	}
+	v, ok := verdicts[it.finding.ID]
+	if !ok {
+		it.fr.Action = report.ActionError
+		it.fr.Error = "agent did not return a valid verdict for this finding"
+		it.terminal = true
+		return
+	}
+	it.verdict = v
+	it.hasVerdict = true
+}
+
+// applyVerdict decides the action for a reviewed finding and writes it back.
+func (o *Orchestrator) applyVerdict(ctx context.Context, it *item) {
+	v := it.verdict
+	it.fr.Verdict = v.Verdict
+	it.fr.Confidence = v.Confidence
+	it.fr.Explanation = v.Explanation
+
 	state := checkmarx.StateToVerify
-	fr.Action = report.ActionCommented
-	if verdict.IsFalsePositive() && verdict.Confidence >= o.opts.FPThreshold {
+	it.fr.Action = report.ActionCommented
+	if v.IsFalsePositive() && v.Confidence >= o.opts.FPThreshold {
 		state = checkmarx.StateProposedNotExploitable
-		fr.Action = report.ActionProposedNotExploit
-		fr.StateSet = state
+		it.fr.Action = report.ActionProposedNotExploit
+		it.fr.StateSet = state
 	}
 
-	comment := formatComment(verdict, o.opts.Agent, o.opts.Model)
+	comment := formatComment(v, o.opts.Agent, o.opts.Model)
 
 	if o.opts.DryRun {
-		return fr
+		return
 	}
 
-	if err := o.cx.PostPredicate(ctx, res.SimilarityID, projectID, res.Severity, state, comment); err != nil {
-		fr.Action = report.ActionError
-		fr.StateSet = ""
-		fr.Error = fmt.Sprintf("posting predicate: %v", err)
-		return fr
+	if err := o.cx.PostPredicate(ctx, it.res.SimilarityID, it.projectID, it.res.Severity, state, comment); err != nil {
+		it.fr.Action = report.ActionError
+		it.fr.StateSet = ""
+		it.fr.Error = fmt.Sprintf("posting predicate: %v", err)
+		return
 	}
-	fr.CommentPosted = true
-	return fr
+	it.fr.CommentPosted = true
 }
 
 // buildFinding converts a Checkmarx result plus source snippets into AI evidence,
 // returning the number of nodes whose source resolved.
 func (o *Orchestrator) buildFinding(res checkmarx.Result) (ai.Finding, int) {
 	f := ai.Finding{
+		ID:          res.SimilarityID,
 		QueryName:   res.Data.QueryName,
 		Group:       res.Data.Group,
 		Language:    res.Data.LanguageName,
@@ -183,6 +338,8 @@ func (o *Orchestrator) buildFinding(res checkmarx.Result) (ai.Finding, int) {
 		}
 		if snip.Resolved {
 			nc.Snippet = snip.Code
+			nc.StartLine = snip.StartLine
+			nc.EndLine = snip.EndLine
 			resolved++
 		} else {
 			nc.Snippet = snip.Note
@@ -233,7 +390,7 @@ func formatComment(v ai.Verdict, agent, model string) string {
 // tally updates report counters from a finding outcome.
 func tally(rep *report.Report, fr report.FindingResult) {
 	switch fr.Action {
-	case report.ActionSkippedAlreadyDone:
+	case report.ActionSkippedAlreadyDone, report.ActionSkippedBudget:
 		rep.Skipped++
 	case report.ActionError:
 		rep.Errors++

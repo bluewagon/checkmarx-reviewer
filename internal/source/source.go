@@ -15,6 +15,7 @@ type Snippet struct {
 	FileName  string // node file path, as reported by Checkmarx
 	Line      int    // the node's line (1-based)
 	StartLine int    // first line included in Code
+	EndLine   int    // last line included in Code (clamped at EOF)
 	Code      string // numbered source lines, or empty if unresolved
 	Resolved  bool   // whether the file was found and read
 	Note      string // reason it was not resolved, if applicable
@@ -85,6 +86,7 @@ func (r *Reader) SnippetFor(fileName string, line int) Snippet {
 	}
 
 	s.StartLine = start
+	s.EndLine = min(end, n) // clamp to EOF
 	s.Code = strings.TrimRight(b.String(), "\n")
 	s.Resolved = true
 	return s

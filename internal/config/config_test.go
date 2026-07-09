@@ -16,6 +16,8 @@ func setEnv(t *testing.T) {
 	t.Setenv("CX_AI_AGENT", "")
 	t.Setenv("CX_AI_MODEL", "")
 	t.Setenv("CX_AI_AGENT_BIN", "")
+	t.Setenv("CX_AI_BATCH_SIZE", "")
+	t.Setenv("CX_AI_COST_LIMIT", "")
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -32,6 +34,12 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.FPThreshold != DefaultFPThreshold || cfg.ContextLines != DefaultContextLines {
 		t.Errorf("defaults not applied: %+v", cfg)
+	}
+	if cfg.BatchSize != DefaultBatchSize {
+		t.Errorf("batch size = %d, want %d", cfg.BatchSize, DefaultBatchSize)
+	}
+	if cfg.CostLimitUSD != DefaultCostLimitUSD {
+		t.Errorf("cost limit = %v, want %v (no limit)", cfg.CostLimitUSD, DefaultCostLimitUSD)
 	}
 	if cfg.BaseURI != "https://us.ast.checkmarx.net" {
 		t.Errorf("trailing slash not trimmed: %q", cfg.BaseURI)
@@ -59,6 +67,14 @@ func TestLoadRejectsUnknownAgent(t *testing.T) {
 	_, err := Load([]string{"--scan-id", "s", "--repo-path", t.TempDir(), "--agent", "gemini"})
 	if err == nil || !strings.Contains(err.Error(), "agent") {
 		t.Fatalf("expected agent error, got %v", err)
+	}
+}
+
+func TestLoadRejectsBadBatchSize(t *testing.T) {
+	setEnv(t)
+	_, err := Load([]string{"--scan-id", "s", "--repo-path", t.TempDir(), "--batch-size", "0"})
+	if err == nil || !strings.Contains(err.Error(), "batch-size") {
+		t.Fatalf("expected batch-size error, got %v", err)
 	}
 }
 

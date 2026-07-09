@@ -50,11 +50,13 @@ func run(args []string) error {
 	reader := source.NewReader(cfg.RepoPath, cfg.ContextLines)
 
 	orch := review.New(cx, reviewer, reader, review.Options{
-		ScanID:      cfg.ScanID,
-		Agent:       cfg.Agent,
-		Model:       reviewer.Model(),
-		FPThreshold: cfg.FPThreshold,
-		DryRun:      cfg.DryRun,
+		ScanID:       cfg.ScanID,
+		Agent:        cfg.Agent,
+		Model:        reviewer.Model(),
+		BatchSize:    cfg.BatchSize,
+		FPThreshold:  cfg.FPThreshold,
+		CostLimitUSD: cfg.CostLimitUSD,
+		DryRun:       cfg.DryRun,
 	}, logf)
 
 	if cfg.DryRun {
@@ -70,8 +72,15 @@ func run(args []string) error {
 		return fmt.Errorf("writing report: %w", err)
 	}
 
-	logf("Done. reviewed=%d skipped=%d errors=%d TP=%d FP=%d stateChanges=%d — report: %s",
-		rep.Reviewed, rep.Skipped, rep.Errors, rep.TruePositives, rep.FalsePositives, rep.StateChanges, cfg.ReportPath)
+	logf("Done. reviewed=%d skipped=%d errors=%d TP=%d FP=%d stateChanges=%d cost=$%.4f tokens=%d — report: %s",
+		rep.Reviewed, rep.Skipped, rep.Errors, rep.TruePositives, rep.FalsePositives, rep.StateChanges,
+		rep.EstimatedCostUSD, rep.TotalTokens, cfg.ReportPath)
+
+	// Non-zero exit if the run aborted on the cost limit, so pipelines notice the
+	// review was incomplete.
+	if rep.Aborted {
+		return fmt.Errorf("run stopped early: %s", rep.AbortReason)
+	}
 
 	// Non-zero exit if any finding failed, so pipelines can detect problems.
 	if rep.Errors > 0 {

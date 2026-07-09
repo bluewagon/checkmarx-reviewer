@@ -19,11 +19,12 @@ leaving a human only to confirm rather than investigate from scratch.
 ```
 scan-id ──▶ GET /api/scans/{id}            → projectId
         ──▶ GET /api/sast-results          → HIGH + TO_VERIFY findings (paginated)
-   per finding:
-        ──▶ GET /api/sast-results-predicates/{similarityId}   → skip if already reviewed
-        ──▶ read source snippets along the data-flow nodes (local checkout)
-        ──▶ agent CLI (claude | copilot) → {verdict, confidence, explanation} JSON
-        ──▶ POST /api/sast-results-predicates → comment (+ state if high-confidence FP)
+   per finding: GET /api/sast-results-predicates/{similarityId} → skip if already reviewed
+                read source snippets along the data-flow nodes (local checkout)
+   per BATCH of findings (default 10):
+        ──▶ one agent CLI call (claude | copilot) → JSON array of {id, verdict, confidence, explanation}
+            (any finding the batch drops/mangles is re-reviewed individually)
+        ──▶ POST /api/sast-results-predicates → comment per finding (+ state if high-confidence FP)
    ──▶ write JSON report
 ```
 
@@ -83,13 +84,25 @@ go build -o checkmarx-reviewer .
 | `--agent` | `claude` | AI agent CLI: `claude` or `copilot` |
 | `--model` | (agent default) | Model id passed to the agent (`claude` defaults to `claude-opus-4-8`; `copilot` uses its configured default) |
 | `--agent-bin` | (agent's command) | Override the agent binary name/path |
-| `--agent-timeout` | `180` | Per-finding agent timeout, in seconds |
+| `--batch-size` | `10` | Findings reviewed per agent invocation (≥1); higher saves tokens |
+| `--agent-timeout` | `300` | Per-invocation agent timeout, in seconds |
 | `--fp-confidence-threshold` | `0.90` | Min confidence [0-1] to auto-set Proposed Not Exploitable |
 | `--context-lines` | `8` | Source lines of context around each data-flow node |
 | `--report` | `checkmarx-ai-review.json` | Output report path |
 | `--dry-run` | `false` | Compute everything, write nothing to Checkmarx |
 
 The process exits non-zero if any finding failed during review (useful for pipelines).
+
+### Token cost & batching
+
+Each agent CLI invocation re-injects the agent's own system prompt and tool schemas —
+a large fixed overhead. Reviewing findings **in batches** (`--batch-size`, default 10)
+pays that overhead once per batch instead of once per finding, which is the dominant
+cost lever; within a finding, overlapping source snippets are also collapsed. To protect
+the auto state-change, any finding a batch drops or answers unparseably is **re-reviewed
+individually** before being marked an error. Set `--batch-size 1` to disable batching
+(one finding per call), or raise it to trade a little per-finding reasoning sharpness for
+lower cost.
 
 ## Output
 
@@ -137,10 +150,11 @@ internal/report            JSON report model + writer
   - `claude` is run as `claude -p --output-format json [--model M]` with the prompt on
     stdin; the JSON envelope's `result` field is unwrapped.
   - `copilot` is run as `copilot [--model M] --allow-all-tools -p "<prompt>"`.
-  - The agent is asked to return a single JSON verdict object; the parser tolerates
-    surrounding prose or code fences and rejects malformed/invalid verdicts (recorded
-    as `ERROR` in the report). Adjust the `agentSpecs` table if your CLI version uses
-    different flags, or point `--agent-bin` at a wrapper.
+  - The agent is asked to return a JSON **array** of verdict objects (one per finding in
+    the batch, keyed by `id`); the parser tolerates surrounding prose or code fences,
+    drops malformed/invalid verdicts, and the orchestrator re-reviews any dropped finding
+    individually before recording it as `ERROR`. Adjust the `agentSpecs` table if your CLI
+    version uses different flags, or point `--agent-bin` at a wrapper.
 - **Source paths**: node `fileName` values are treated as repo-root-relative to
   `--repo-path`. Files that don't resolve are reported (not fatal) and the affected
   nodes are sent to the agent marked as unavailable.

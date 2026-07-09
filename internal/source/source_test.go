@@ -30,6 +30,9 @@ func TestSnippetForResolvesAndMarksLine(t *testing.T) {
 	if s.StartLine != 2 {
 		t.Errorf("StartLine = %d, want 2", s.StartLine)
 	}
+	if s.EndLine != 6 {
+		t.Errorf("EndLine = %d, want 6", s.EndLine)
+	}
 	if !strings.Contains(s.Code, ">> ") || !strings.Contains(s.Code, "l4") {
 		t.Errorf("expected marked line 4 in code:\n%s", s.Code)
 	}
@@ -46,6 +49,9 @@ func TestSnippetForClampsAtStart(t *testing.T) {
 	s := r.SnippetFor("a.go", 1)
 	if !s.Resolved || s.StartLine != 1 {
 		t.Fatalf("StartLine = %d resolved=%v", s.StartLine, s.Resolved)
+	}
+	if s.EndLine != 3 { // context wants line 6 but file has only 3 lines
+		t.Errorf("EndLine = %d, want 3 (clamped at EOF)", s.EndLine)
 	}
 }
 
