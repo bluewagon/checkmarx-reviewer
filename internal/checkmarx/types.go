@@ -50,7 +50,7 @@ type ResultData struct {
 type Result struct {
 	Type            string     `json:"type"`
 	ID              string     `json:"id"`
-	SimilarityID    string     `json:"similarityID"`
+	SimilarityID    int64      `json:"similarityID,string"`
 	ResultHash      string     `json:"resultHash"`
 	Status          string     `json:"status"`
 	State           string     `json:"state"`

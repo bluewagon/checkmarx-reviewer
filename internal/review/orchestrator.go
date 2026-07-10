@@ -5,6 +5,7 @@ package review
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -153,8 +154,9 @@ type item struct {
 // prepare runs the idempotency check and builds source evidence for one finding.
 func (o *Orchestrator) prepare(ctx context.Context, projectID string, res checkmarx.Result) *item {
 	it := &item{res: res, projectID: projectID}
+	simID := strconv.FormatInt(res.SimilarityID, 10)
 	it.fr = report.FindingResult{
-		SimilarityID: res.SimilarityID,
+		SimilarityID: simID,
 		ResultHash:   res.ResultHash,
 		QueryName:    res.Data.QueryName,
 		Severity:     res.Severity,
@@ -165,7 +167,7 @@ func (o *Orchestrator) prepare(ctx context.Context, projectID string, res checkm
 		it.fr.SinkLine = sink.Line
 	}
 
-	history, err := o.cx.GetPredicateHistory(ctx, res.SimilarityID, projectID)
+	history, err := o.cx.GetPredicateHistory(ctx, simID, projectID)
 	if err != nil {
 		it.fr.Action = report.ActionError
 		it.fr.Error = fmt.Sprintf("fetching predicate history: %v", err)
@@ -305,7 +307,7 @@ func (o *Orchestrator) applyVerdict(ctx context.Context, it *item) {
 		return
 	}
 
-	if err := o.cx.PostPredicate(ctx, it.res.SimilarityID, it.projectID, it.res.Severity, state, comment); err != nil {
+	if err := o.cx.PostPredicate(ctx, strconv.FormatInt(it.res.SimilarityID, 10), it.projectID, it.res.Severity, state, comment); err != nil {
 		it.fr.Action = report.ActionError
 		it.fr.StateSet = ""
 		it.fr.Error = fmt.Sprintf("posting predicate: %v", err)
@@ -318,7 +320,7 @@ func (o *Orchestrator) applyVerdict(ctx context.Context, it *item) {
 // returning the number of nodes whose source resolved.
 func (o *Orchestrator) buildFinding(res checkmarx.Result) (ai.Finding, int) {
 	f := ai.Finding{
-		ID:          res.SimilarityID,
+		ID:          strconv.FormatInt(res.SimilarityID, 10),
 		QueryName:   res.Data.QueryName,
 		Group:       res.Data.Group,
 		Language:    res.Data.LanguageName,

@@ -3,7 +3,6 @@ package checkmarx
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -108,15 +107,15 @@ func TestListHighToVerifyPagination(t *testing.T) {
 	if len(got) != resultsPageSize+5 {
 		t.Fatalf("expected %d results, got %d", resultsPageSize+5, len(got))
 	}
-	if got[0].SimilarityID != "sim-0" || got[resultsPageSize].SimilarityID != fmt.Sprintf("sim-%d", resultsPageSize) {
-		t.Errorf("results not assembled in order: first=%s pageBoundary=%s", got[0].SimilarityID, got[resultsPageSize].SimilarityID)
+	if got[0].SimilarityID != 0 || got[resultsPageSize].SimilarityID != int64(resultsPageSize) {
+		t.Errorf("results not assembled in order: first=%d pageBoundary=%d", got[0].SimilarityID, got[resultsPageSize].SimilarityID)
 	}
 }
 
 func makeResults(n, base int) []Result {
 	out := make([]Result, n)
 	for i := range out {
-		out[i] = Result{SimilarityID: fmt.Sprintf("sim-%d", base+i), Severity: SeverityHigh, State: StateToVerify}
+		out[i] = Result{SimilarityID: int64(base + i), Severity: SeverityHigh, State: StateToVerify}
 	}
 	return out
 }

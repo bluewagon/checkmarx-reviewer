@@ -68,7 +68,7 @@ func (f *fakeReviewer) Review(_ context.Context, findings []ai.Finding) (map[str
 	return out, f.usagePerCall, nil
 }
 
-func result(sim string) checkmarx.Result {
+func result(sim int64) checkmarx.Result {
 	return checkmarx.Result{
 		SimilarityID: sim,
 		Severity:     checkmarx.SeverityHigh,
@@ -88,7 +88,7 @@ func newOrchRev(t *testing.T, cx *fakeCx, rev ai.Reviewer, threshold float64, dr
 	}, nil)
 }
 
-func results(sims ...string) []checkmarx.Result {
+func results(sims ...int64) []checkmarx.Result {
 	rs := make([]checkmarx.Result, len(sims))
 	for i, s := range sims {
 		rs[i] = result(s)
@@ -108,7 +108,7 @@ func run(t *testing.T, o *Orchestrator) *report.Report {
 // --- tests ---
 
 func TestHighConfidenceFPSetsProposedNotExploitable(t *testing.T) {
-	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{result("sim-1")}}
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{result(1)}}
 	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictFalsePositive, Confidence: 0.95, Explanation: "sanitized"}, 0.90, false)
 
 	rep := run(t, o)
@@ -132,7 +132,7 @@ func TestHighConfidenceFPSetsProposedNotExploitable(t *testing.T) {
 }
 
 func TestLowConfidenceFPCommentsOnly(t *testing.T) {
-	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{result("sim-1")}}
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{result(1)}}
 	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictFalsePositive, Confidence: 0.80, Explanation: "unsure"}, 0.90, false)
 
 	rep := run(t, o)
@@ -146,7 +146,7 @@ func TestLowConfidenceFPCommentsOnly(t *testing.T) {
 }
 
 func TestTruePositiveCommentsAndKeepsState(t *testing.T) {
-	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{result("sim-1")}}
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{result(1)}}
 	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.99, Explanation: "exploitable"}, 0.90, false)
 
 	rep := run(t, o)
@@ -162,8 +162,8 @@ func TestTruePositiveCommentsAndKeepsState(t *testing.T) {
 func TestSkipsAlreadyReviewed(t *testing.T) {
 	cx := &fakeCx{
 		scan:    &checkmarx.Scan{ProjectID: "proj-1"},
-		results: []checkmarx.Result{result("sim-1")},
-		history: map[string][]checkmarx.Predicate{"sim-1": {{Comment: "[AI-REVIEW] TRUE POSITIVE — confidence 90%"}}},
+		results: []checkmarx.Result{result(1)},
+		history: map[string][]checkmarx.Predicate{"1": {{Comment: "[AI-REVIEW] TRUE POSITIVE — confidence 90%"}}},
 	}
 	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictFalsePositive, Confidence: 0.99}, 0.90, false)
 
@@ -178,7 +178,7 @@ func TestSkipsAlreadyReviewed(t *testing.T) {
 }
 
 func TestDryRunWritesNothing(t *testing.T) {
-	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{result("sim-1")}}
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{result(1)}}
 	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictFalsePositive, Confidence: 0.99, Explanation: "x"}, 0.90, true)
 
 	rep := run(t, o)
@@ -193,7 +193,7 @@ func TestDryRunWritesNothing(t *testing.T) {
 }
 
 func TestBatchingChunksBySizeAndPreservesOrder(t *testing.T) {
-	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: results("sim-1", "sim-2", "sim-3", "sim-4", "sim-5")}
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: results(1, 2, 3, 4, 5)}
 	rev := &fakeReviewer{v: ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"}}
 	o := newOrchRev(t, cx, rev, 0.90, false, 2)
 
@@ -205,7 +205,7 @@ func TestBatchingChunksBySizeAndPreservesOrder(t *testing.T) {
 	if len(cx.posts) != 5 || rep.Reviewed != 5 {
 		t.Errorf("expected 5 reviewed/posted, got posts=%d reviewed=%d", len(cx.posts), rep.Reviewed)
 	}
-	for i, want := range []string{"sim-1", "sim-2", "sim-3", "sim-4", "sim-5"} {
+	for i, want := range []string{"1", "2", "3", "4", "5"} {
 		if rep.Findings[i].SimilarityID != want {
 			t.Errorf("report order[%d] = %s, want %s", i, rep.Findings[i].SimilarityID, want)
 		}
@@ -213,11 +213,11 @@ func TestBatchingChunksBySizeAndPreservesOrder(t *testing.T) {
 }
 
 func TestFallbackReReviewsFindingDroppedFromBatch(t *testing.T) {
-	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: results("sim-1", "sim-2", "sim-3")}
-	// sim-2 is dropped in the multi-finding batch but answered on individual retry.
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: results(1, 2, 3)}
+	// finding 2 is dropped in the multi-finding batch but answered on individual retry.
 	rev := &fakeReviewer{
 		v:           ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"},
-		omitInBatch: map[string]bool{"sim-2": true},
+		omitInBatch: map[string]bool{"2": true},
 	}
 	o := newOrchRev(t, cx, rev, 0.90, false, 3)
 
@@ -226,7 +226,7 @@ func TestFallbackReReviewsFindingDroppedFromBatch(t *testing.T) {
 	if rep.Reviewed != 3 || rep.Errors != 0 {
 		t.Fatalf("expected all 3 reviewed via fallback, got reviewed=%d errors=%d", rep.Reviewed, rep.Errors)
 	}
-	// One batch of 3, then one fallback of 1 for sim-2.
+	// One batch of 3, then one fallback of 1 for finding 2.
 	if want := []int{3, 1}; fmt.Sprint(rev.batchSizes) != fmt.Sprint(want) {
 		t.Errorf("batch sizes = %v, want %v", rev.batchSizes, want)
 	}
@@ -236,11 +236,11 @@ func TestFallbackReReviewsFindingDroppedFromBatch(t *testing.T) {
 }
 
 func TestFallbackExhaustedMarksError(t *testing.T) {
-	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: results("sim-1", "sim-2")}
-	// sim-2 is never answered, even individually.
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: results(1, 2)}
+	// finding 2 is never answered, even individually.
 	rev := &fakeReviewer{
 		v:          ai.Verdict{Verdict: ai.VerdictFalsePositive, Confidence: 0.99, Explanation: "x"},
-		omitAlways: map[string]bool{"sim-2": true},
+		omitAlways: map[string]bool{"2": true},
 	}
 	o := newOrchRev(t, cx, rev, 0.90, false, 2)
 
@@ -249,23 +249,23 @@ func TestFallbackExhaustedMarksError(t *testing.T) {
 	if rep.Errors != 1 || rep.Reviewed != 1 {
 		t.Fatalf("expected 1 error + 1 reviewed, got errors=%d reviewed=%d", rep.Errors, rep.Reviewed)
 	}
-	// Only sim-1 should have been posted.
-	if len(cx.posts) != 1 || cx.posts[0].similarityID != "sim-1" {
-		t.Errorf("expected only sim-1 posted, got %+v", cx.posts)
+	// Only finding 1 should have been posted.
+	if len(cx.posts) != 1 || cx.posts[0].similarityID != "1" {
+		t.Errorf("expected only finding 1 posted, got %+v", cx.posts)
 	}
 	var sim2 *report.FindingResult
 	for i := range rep.Findings {
-		if rep.Findings[i].SimilarityID == "sim-2" {
+		if rep.Findings[i].SimilarityID == "2" {
 			sim2 = &rep.Findings[i]
 		}
 	}
 	if sim2 == nil || sim2.Action != report.ActionError {
-		t.Errorf("sim-2 should be ERROR, got %+v", sim2)
+		t.Errorf("finding 2 should be ERROR, got %+v", sim2)
 	}
 }
 
 func TestCostLimitStopsRunAndMarksRemaining(t *testing.T) {
-	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: results("sim-1", "sim-2", "sim-3", "sim-4", "sim-5")}
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: results(1, 2, 3, 4, 5)}
 	// Each call costs $0.05; with a $0.10 limit the run stops after two batches.
 	rev := &fakeReviewer{
 		v:            ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"},
@@ -305,7 +305,7 @@ func TestCostLimitStopsRunAndMarksRemaining(t *testing.T) {
 }
 
 func TestBatchInvocationErrorFallsBackToIndividual(t *testing.T) {
-	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: results("sim-1", "sim-2")}
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: results(1, 2)}
 	// Any batch larger than 1 fails; individual retries succeed.
 	rev := &fakeReviewer{
 		v:               ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"},
