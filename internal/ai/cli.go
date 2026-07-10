@@ -52,23 +52,37 @@ var agentSpecs = map[string]agentSpec{
 		},
 		extract: extractClaudeResult,
 	},
-	// copilot [--model M] --allow-all-tools -p "<prompt>"
+	// copilot [--model M] (--deny-tool … | --allow-all-tools --allow-all-paths) -p "<prompt>"
 	AgentCopilot: {
 		bin:            "copilot",
 		defaultModel:   "", // let Copilot use its configured default
 		promptViaStdin: false,
-		args: func(model string, _ bool) []string {
+		args: func(model string, agentic bool) []string {
 			var a []string
 			if model != "" {
 				a = append(a, "--model", model)
 			}
-			// Copilot always runs with tools enabled; in agentic mode it reads the
-			// repo from its working directory like Claude.
-			return append(a, "--allow-all-tools", "-p")
+			if agentic {
+				// Grant tools AND path trust so it can read the repo checked out at
+				// its working directory (Copilot gates tools and paths separately).
+				a = append(a, "--allow-all-tools", "--allow-all-paths")
+			} else {
+				// No repo access: deny the read/search/mutation tools so Copilot
+				// reasons purely from the inlined snippets instead of attempting
+				// (and failing) file searches. Deny always wins in Copilot.
+				a = append(a, "--deny-tool", copilotNonAgenticDenyTools)
+			}
+			return append(a, "-p")
 		},
 		extract: func(b []byte) (string, Usage) { return string(b), Usage{} },
 	},
 }
+
+// copilotNonAgenticDenyTools is the comma-separated list of Copilot built-in tool
+// kinds denied in non-agentic mode. Copilot has no single "deny-all" flag, so we
+// enumerate the tools that would touch the filesystem, run commands, or reach the
+// network; deny rules take precedence over any allow.
+const copilotNonAgenticDenyTools = "shell,write,edit,read,view,grep,glob,web_fetch,web_search"
 
 // SupportedAgents lists the agent identifiers accepted by NewCLIReviewer.
 func SupportedAgents() []string { return []string{AgentClaude, AgentCopilot} }

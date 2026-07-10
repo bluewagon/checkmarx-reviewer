@@ -173,8 +173,35 @@ func TestCopilotReviewSendsPromptAsArg(t *testing.T) {
 	if len(cr.args) == 0 || !strings.Contains(cr.args[len(cr.args)-1], "id=sim-1") {
 		t.Errorf("copilot should receive prompt as final arg: %v", cr.args)
 	}
-	if !slices.Contains(cr.args, "--allow-all-tools") {
-		t.Errorf("copilot args missing --allow-all-tools: %v", cr.args)
+	// Non-agentic Copilot must not enable tools; it should deny them so it reasons
+	// only from the inlined snippets instead of attempting (and failing) searches.
+	if slices.Contains(cr.args, "--allow-all-tools") {
+		t.Errorf("non-agentic copilot should not enable tools: %v", cr.args)
+	}
+	if !slices.Contains(cr.args, "--deny-tool") {
+		t.Errorf("non-agentic copilot should deny tools: %v", cr.args)
+	}
+	// -p must remain immediately before the prompt (the final arg).
+	if pi := slices.Index(cr.args, "-p"); pi != len(cr.args)-2 {
+		t.Errorf("-p should immediately precede the prompt arg: %v", cr.args)
+	}
+}
+
+func TestAgenticCopilotAllowsTools(t *testing.T) {
+	cr := &captureRunner{stdout: "[{\"id\":\"sim-1\",\"verdict\":\"TRUE_POSITIVE\",\"confidence\":0.7,\"explanation\":\"reaches sink\"}]\n"}
+	r := newAgenticReviewerForTest(AgentCopilot, "/repo/root", cr.run)
+
+	if _, _, err := r.Review(context.Background(), findings("sim-1")); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if cr.dir != "/repo/root" {
+		t.Errorf("agentic copilot should run in the repo root, got %q", cr.dir)
+	}
+	if !slices.Contains(cr.args, "--allow-all-tools") || !slices.Contains(cr.args, "--allow-all-paths") {
+		t.Errorf("agentic copilot should grant tools and path trust: %v", cr.args)
+	}
+	if slices.Contains(cr.args, "--deny-tool") {
+		t.Errorf("agentic copilot should not deny tools: %v", cr.args)
 	}
 }
 
