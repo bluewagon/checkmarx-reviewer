@@ -51,12 +51,39 @@ func TestBuildBatchPromptIncludesEvidenceAndIDs(t *testing.T) {
 	}
 	f2 := Finding{ID: "sim-2", QueryName: "XSS", Nodes: []NodeContext{{Order: 1, FileName: "c.go", Line: 5, Snippet: "5| out", Resolved: true, StartLine: 3, EndLine: 7}}}
 
-	got := buildBatchPrompt([]Finding{f1, f2})
+	got := buildBatchPrompt([]Finding{f1, f2}, false)
 
 	for _, want := range []string{"SQL_Injection", "a.go:10", "b.go:20", "req", "id=sim-1", "id=sim-2", "\"id\"", "\"verdict\"", "source unavailable", "2 finding"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("prompt missing %q\n---\n%s", want, got)
 		}
+	}
+}
+
+func TestBuildBatchPromptAgenticInvitesRepoAccess(t *testing.T) {
+	f := Finding{
+		ID:        "sim-1",
+		QueryName: "Reflected_XSS",
+		Nodes: []NodeContext{{Order: 1, FileName: "page.jsp", Line: 3, Snippet: "   3| <%= data %>", Resolved: true, StartLine: 1, EndLine: 5}},
+	}
+
+	agentic := buildBatchPrompt([]Finding{f}, true)
+
+	// Agentic prompt tells the agent it may read/search the repo checkout...
+	for _, want := range []string{"working directory", "read-only tools", "Grep"} {
+		if !strings.Contains(agentic, want) {
+			t.Errorf("agentic prompt missing %q\n---\n%s", want, agentic)
+		}
+	}
+	// ...while still inlining the snippet and finding metadata as a starting point.
+	for _, want := range []string{"page.jsp:3", "<%= data %>", "id=sim-1"} {
+		if !strings.Contains(agentic, want) {
+			t.Errorf("agentic prompt should still include snippet/metadata %q", want)
+		}
+	}
+	// The non-agentic prompt must NOT claim repo access.
+	if plain := buildBatchPrompt([]Finding{f}, false); strings.Contains(plain, "read-only tools") {
+		t.Errorf("non-agentic prompt should not mention repo tools:\n%s", plain)
 	}
 }
 
@@ -71,7 +98,7 @@ func TestBuildBatchPromptDedupsCoveredRanges(t *testing.T) {
 			{Order: 2, FileName: "a.go", Line: 12, Snippet: "block-A-source", Resolved: true, StartLine: 10, EndLine: 14},
 		},
 	}
-	got := buildBatchPrompt([]Finding{f})
+	got := buildBatchPrompt([]Finding{f}, false)
 
 	if strings.Count(got, "block-A-source") != 1 {
 		t.Errorf("overlapping snippet should be printed once:\n%s", got)

@@ -24,7 +24,9 @@ type agentSpec struct {
 	bin            string
 	defaultModel   string
 	promptViaStdin bool // pass the prompt on stdin vs. as the final arg
-	args           func(model string) []string
+	// args builds the CLI args for the given model. When agentic is true the agent
+	// is granted read-only repo tools (it runs with the repo as its working dir).
+	args func(model string, agentic bool) []string
 	// extract pulls the assistant text and any reported token/cost usage out of
 	// stdout. Agents that report no usage return a zero Usage.
 	extract func(stdout []byte) (string, Usage)
@@ -36,10 +38,14 @@ var agentSpecs = map[string]agentSpec{
 		bin:            "claude",
 		defaultModel:   "claude-opus-4-8",
 		promptViaStdin: true,
-		args: func(model string) []string {
+		args: func(model string, agentic bool) []string {
 			a := []string{"-p", "--output-format", "json"}
 			if model != "" {
 				a = append(a, "--model", model)
+			}
+			if agentic {
+				// Read-only exploration of the repo checked out at the working dir.
+				a = append(a, "--allowedTools", "Read Grep Glob LS")
 			}
 			return a
 		},
@@ -50,11 +56,13 @@ var agentSpecs = map[string]agentSpec{
 		bin:            "copilot",
 		defaultModel:   "", // let Copilot use its configured default
 		promptViaStdin: false,
-		args: func(model string) []string {
+		args: func(model string, _ bool) []string {
 			var a []string
 			if model != "" {
 				a = append(a, "--model", model)
 			}
+			// Copilot always runs with tools enabled; in agentic mode it reads the
+			// repo from its working directory like Claude.
 			return append(a, "--allow-all-tools", "-p")
 		},
 		extract: func(b []byte) (string, Usage) { return string(b), Usage{} },
@@ -64,24 +72,29 @@ var agentSpecs = map[string]agentSpec{
 // SupportedAgents lists the agent identifiers accepted by NewCLIReviewer.
 func SupportedAgents() []string { return []string{AgentClaude, AgentCopilot} }
 
-// runner executes a command; abstracted so tests can inject a fake.
-type runner func(ctx context.Context, bin string, args []string, stdin []byte) (stdout, stderr []byte, err error)
+// runner executes a command in dir (empty = inherit); abstracted so tests can
+// inject a fake.
+type runner func(ctx context.Context, bin string, args []string, stdin []byte, dir string) (stdout, stderr []byte, err error)
 
 // CLIReviewer implements Reviewer by shelling out to an AI agent CLI. The agent
-// is given a fully self-contained prompt and must reply with a JSON verdict.
+// is given a self-contained prompt and must reply with a JSON verdict. In agentic
+// mode it also runs with workDir as its working directory and is granted
+// read-only tools so it can explore the repo checkout for extra context.
 type CLIReviewer struct {
 	agent   string
 	spec    agentSpec
 	bin     string
 	model   string
 	timeout time.Duration
+	agentic bool
+	workDir string
 	run     runner
 }
 
 // NewCLIReviewer builds a reviewer for the named agent ("claude" or "copilot").
 // model may be empty to use the agent's default. binOverride, when non-empty,
 // replaces the default binary name. It verifies the binary is on PATH.
-func NewCLIReviewer(agent, model, binOverride string, timeout time.Duration) (*CLIReviewer, error) {
+func NewCLIReviewer(agent, model, binOverride string, timeout time.Duration, agentic bool, workDir string) (*CLIReviewer, error) {
 	spec, ok := agentSpecs[agent]
 	if !ok {
 		return nil, fmt.Errorf("unknown agent %q (supported: %s)", agent, strings.Join(SupportedAgents(), ", "))
@@ -99,7 +112,7 @@ func NewCLIReviewer(agent, model, binOverride string, timeout time.Duration) (*C
 	if timeout <= 0 {
 		timeout = DefaultAgentTimeout
 	}
-	return &CLIReviewer{agent: agent, spec: spec, bin: bin, model: model, timeout: timeout, run: execRunner}, nil
+	return &CLIReviewer{agent: agent, spec: spec, bin: bin, model: model, timeout: timeout, agentic: agentic, workDir: workDir, run: execRunner}, nil
 }
 
 // Model returns the effective model (may be empty for an agent default).
@@ -116,9 +129,9 @@ func (r *CLIReviewer) Review(ctx context.Context, findings []Finding) (map[strin
 		return map[string]Verdict{}, Usage{}, nil
 	}
 
-	prompt := buildBatchPrompt(findings)
+	prompt := buildBatchPrompt(findings, r.agentic)
 
-	args := r.spec.args(r.model)
+	args := r.spec.args(r.model, r.agentic)
 	var stdin []byte
 	if r.spec.promptViaStdin {
 		stdin = []byte(prompt)
@@ -129,7 +142,12 @@ func (r *CLIReviewer) Review(ctx context.Context, findings []Finding) (map[strin
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	stdout, stderr, err := r.run(ctx, r.bin, args, stdin)
+	// In agentic mode the agent reads the repo relative to its working directory.
+	dir := ""
+	if r.agentic {
+		dir = r.workDir
+	}
+	stdout, stderr, err := r.run(ctx, r.bin, args, stdin, dir)
 	if err != nil {
 		return nil, Usage{}, fmt.Errorf("%s invocation failed: %w: %s", r.agent, err, truncate(string(stderr), 500))
 	}
@@ -160,9 +178,11 @@ func (r *CLIReviewer) Review(ctx context.Context, findings []Finding) (map[strin
 	return out, usage, nil
 }
 
-// execRunner is the production runner backed by os/exec.
-func execRunner(ctx context.Context, bin string, args []string, stdin []byte) ([]byte, []byte, error) {
+// execRunner is the production runner backed by os/exec. dir, when non-empty,
+// sets the command's working directory.
+func execRunner(ctx context.Context, bin string, args []string, stdin []byte, dir string) ([]byte, []byte, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Dir = dir
 	if len(stdin) > 0 {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}

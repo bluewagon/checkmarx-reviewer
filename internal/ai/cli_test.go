@@ -71,19 +71,28 @@ type captureRunner struct {
 	bin    string
 	args   []string
 	stdin  string
+	dir    string
 	stdout string
 	stderr string
 	err    error
 }
 
-func (c *captureRunner) run(_ context.Context, bin string, args []string, stdin []byte) ([]byte, []byte, error) {
-	c.bin, c.args, c.stdin = bin, args, string(stdin)
+func (c *captureRunner) run(_ context.Context, bin string, args []string, stdin []byte, dir string) ([]byte, []byte, error) {
+	c.bin, c.args, c.stdin, c.dir = bin, args, string(stdin), dir
 	return []byte(c.stdout), []byte(c.stderr), c.err
 }
 
 func newReviewerForTest(agent string, run runner) *CLIReviewer {
 	spec := agentSpecs[agent]
 	return &CLIReviewer{agent: agent, spec: spec, bin: spec.bin, model: spec.defaultModel, timeout: time.Second, run: run}
+}
+
+// newAgenticReviewerForTest builds a reviewer with agentic mode and a work dir.
+func newAgenticReviewerForTest(agent, workDir string, run runner) *CLIReviewer {
+	r := newReviewerForTest(agent, run)
+	r.agentic = true
+	r.workDir = workDir
+	return r
 }
 
 func findings(ids ...string) []Finding {
@@ -113,6 +122,36 @@ func TestClaudeBatchReviewMapsByID(t *testing.T) {
 	}
 	if !slices.Contains(cr.args, "--output-format") {
 		t.Errorf("claude args missing flags: %v", cr.args)
+	}
+	// Non-agentic runs inherit the cwd and grant no repo tools.
+	if cr.dir != "" {
+		t.Errorf("non-agentic run should not set a working dir, got %q", cr.dir)
+	}
+	if slices.Contains(cr.args, "--allowedTools") {
+		t.Errorf("non-agentic run should not grant tools: %v", cr.args)
+	}
+}
+
+func TestAgenticClaudeSetsWorkDirAndTools(t *testing.T) {
+	cr := &captureRunner{stdout: `{"type":"result","result":"[{\"id\":\"sim-1\",\"verdict\":\"TRUE_POSITIVE\",\"confidence\":0.8,\"explanation\":\"x\"}]"}`}
+	r := newAgenticReviewerForTest(AgentClaude, "/repo/root", cr.run)
+
+	if _, _, err := r.Review(context.Background(), findings("sim-1")); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if cr.dir != "/repo/root" {
+		t.Errorf("agentic run should set working dir to repo root, got %q", cr.dir)
+	}
+	i := slices.Index(cr.args, "--allowedTools")
+	if i < 0 || i+1 >= len(cr.args) {
+		t.Fatalf("agentic claude args missing --allowedTools: %v", cr.args)
+	}
+	if tools := cr.args[i+1]; !strings.Contains(tools, "Read") || !strings.Contains(tools, "Grep") {
+		t.Errorf("read-only tools not granted: %q", tools)
+	}
+	// The agentic prompt must invite the agent to read/search the repo.
+	if !strings.Contains(cr.stdin, "working directory") || !strings.Contains(cr.stdin, "read-only tools") {
+		t.Errorf("agentic prompt missing repo-access guidance: %q", cr.stdin)
 	}
 }
 
@@ -186,7 +225,7 @@ func TestReviewEmptyBatch(t *testing.T) {
 }
 
 func TestNewCLIReviewerUnknownAgent(t *testing.T) {
-	if _, err := NewCLIReviewer("gemini", "", "", 0); err == nil {
+	if _, err := NewCLIReviewer("gemini", "", "", 0, false, ""); err == nil {
 		t.Fatal("expected error for unknown agent")
 	}
 }

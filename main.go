@@ -44,10 +44,8 @@ func run(args []string) error {
 		Tenant:  cfg.Tenant,
 		APIKey:  cfg.APIKey,
 	})
-	reviewer, err := ai.NewCLIReviewer(cfg.Agent, cfg.Model, cfg.AgentBin, cfg.AgentTimeout)
-	if err != nil {
-		return err
-	}
+	// Resolve the repo root first (cloning a Bitbucket URL if given) so the reviewer
+	// can be pointed at it for agentic source access.
 	repoRoot := cfg.RepoPath
 	if vcs.IsRemoteURL(cfg.RepoPath) {
 		cloneURL, err := vcs.NormalizeBitbucketURL(cfg.RepoPath)
@@ -61,6 +59,14 @@ func run(args []string) error {
 		}
 		defer cleanup()
 		repoRoot = dir
+	}
+
+	reviewer, err := ai.NewCLIReviewer(cfg.Agent, cfg.Model, cfg.AgentBin, cfg.AgentTimeout, cfg.AgenticSource, repoRoot)
+	if err != nil {
+		return err
+	}
+	if cfg.AgenticSource {
+		logf("Agentic source access enabled (repo: %s)", repoRoot)
 	}
 	reader := source.NewReader(repoRoot, cfg.ContextLines)
 

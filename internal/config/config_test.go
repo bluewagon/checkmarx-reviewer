@@ -19,6 +19,7 @@ func setEnv(t *testing.T) {
 	t.Setenv("CX_AI_BATCH_SIZE", "")
 	t.Setenv("CX_AI_COST_LIMIT", "")
 	t.Setenv("CX_BITBUCKET_TOKEN", "")
+	t.Setenv("CX_AI_AGENTIC_SOURCE", "")
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -41,6 +42,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.CostLimitUSD != DefaultCostLimitUSD {
 		t.Errorf("cost limit = %v, want %v (no limit)", cfg.CostLimitUSD, DefaultCostLimitUSD)
+	}
+	if cfg.AgenticSource {
+		t.Errorf("agentic source should default to false")
 	}
 	if cfg.BaseURI != "https://us.ast.checkmarx.net" {
 		t.Errorf("trailing slash not trimmed: %q", cfg.BaseURI)
@@ -106,6 +110,17 @@ func TestLoadAcceptsBitbucketURLWithToken(t *testing.T) {
 	// The URL is kept verbatim; normalization/cloning happens at run time.
 	if cfg.RepoPath != url || cfg.BitbucketToken != "tok" {
 		t.Errorf("unexpected cfg: repoPath=%q token=%q", cfg.RepoPath, cfg.BitbucketToken)
+	}
+}
+
+func TestLoadAgenticSourceFlag(t *testing.T) {
+	setEnv(t)
+	cfg, err := Load([]string{"--scan-id", "s", "--repo-path", t.TempDir(), "--agentic-source"})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.AgenticSource {
+		t.Error("--agentic-source should set AgenticSource true")
 	}
 }
 

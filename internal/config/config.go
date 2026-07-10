@@ -39,6 +39,9 @@ type Config struct {
 	ContextLines int
 	ReportPath   string
 	DryRun       bool
+	// AgenticSource lets the agent read/search the repo for extra context instead
+	// of relying only on the inlined snippets.
+	AgenticSource bool
 }
 
 // Defaults for optional settings.
@@ -71,6 +74,7 @@ func Load(args []string) (*Config, error) {
 	fs.IntVar(&cfg.ContextLines, "context-lines", DefaultContextLines, "Source lines of context to include around each data-flow node")
 	fs.StringVar(&cfg.ReportPath, "report", DefaultReportPath, "Path to write the JSON report")
 	fs.BoolVar(&cfg.DryRun, "dry-run", false, "Compute verdicts and intended actions without writing to Checkmarx")
+	fs.BoolVar(&cfg.AgenticSource, "agentic-source", envBoolOr("CX_AI_AGENTIC_SOURCE", false), "Let the agent read/search the repo for extra context instead of only the inlined snippets (uses more time per finding)")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -170,6 +174,16 @@ func envFloatOr(key string, fallback float64) float64 {
 	if v := os.Getenv(key); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			return f
+		}
+	}
+	return fallback
+}
+
+// envBoolOr returns the bool value of an env var, or fallback if unset/invalid.
+func envBoolOr(key string, fallback bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
 		}
 	}
 	return fallback
