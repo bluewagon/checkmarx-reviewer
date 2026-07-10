@@ -7,7 +7,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -34,7 +34,11 @@ func run(args []string) error {
 		return err
 	}
 
-	logf := log.New(os.Stderr, "", log.LstdFlags).Printf
+	level := slog.LevelInfo
+	if cfg.Verbose {
+		level = slog.LevelDebug
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -43,6 +47,7 @@ func run(args []string) error {
 		BaseURI: cfg.BaseURI,
 		Tenant:  cfg.Tenant,
 		APIKey:  cfg.APIKey,
+		Logger:  logger,
 	})
 	// Resolve the repo root first (cloning a Bitbucket URL if given) so the reviewer
 	// can be pointed at it for agentic source access.
@@ -52,21 +57,22 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		logf("Cloning %s (shallow) …", cloneURL)
+		logger.Info("cloning repo (shallow)", "url", cloneURL)
 		dir, cleanup, err := vcs.CloneToTemp(ctx, cloneURL, cfg.BitbucketToken)
 		if err != nil {
+			logger.Error("clone failed", "url", cloneURL, "err", err)
 			return fmt.Errorf("cloning repo: %w", err)
 		}
 		defer cleanup()
 		repoRoot = dir
 	}
 
-	reviewer, err := ai.NewCLIReviewer(cfg.Agent, cfg.Model, cfg.AgentBin, cfg.AgentTimeout, cfg.AgenticSource, repoRoot)
+	reviewer, err := ai.NewCLIReviewer(cfg.Agent, cfg.Model, cfg.AgentBin, cfg.AgentTimeout, cfg.AgenticSource, repoRoot, logger)
 	if err != nil {
 		return err
 	}
 	if cfg.AgenticSource {
-		logf("Agentic source access enabled (repo: %s)", repoRoot)
+		logger.Info("agentic source access enabled", "repo", repoRoot)
 	}
 	reader := source.NewReader(repoRoot, cfg.ContextLines)
 
@@ -78,10 +84,10 @@ func run(args []string) error {
 		FPThreshold:  cfg.FPThreshold,
 		CostLimitUSD: cfg.CostLimitUSD,
 		DryRun:       cfg.DryRun,
-	}, logf)
+	}, logger)
 
 	if cfg.DryRun {
-		logf("DRY RUN: no comments or state changes will be written to Checkmarx")
+		logger.Info("dry run: no comments or state changes will be written to Checkmarx")
 	}
 
 	rep, err := orch.Run(ctx)
@@ -93,9 +99,12 @@ func run(args []string) error {
 		return fmt.Errorf("writing report: %w", err)
 	}
 
-	logf("Done. reviewed=%d skipped=%d errors=%d TP=%d FP=%d stateChanges=%d cost=$%.4f tokens=%d — report: %s",
-		rep.Reviewed, rep.Skipped, rep.Errors, rep.TruePositives, rep.FalsePositives, rep.StateChanges,
-		rep.EstimatedCostUSD, rep.TotalTokens, cfg.ReportPath)
+	logger.Info("done",
+		"reviewed", rep.Reviewed, "skipped", rep.Skipped, "errors", rep.Errors,
+		"truePositives", rep.TruePositives, "falsePositives", rep.FalsePositives,
+		"stateChanges", rep.StateChanges,
+		"costUsd", fmt.Sprintf("%.4f", rep.EstimatedCostUSD), "tokens", rep.TotalTokens,
+		"report", cfg.ReportPath)
 
 	// Non-zero exit if the run aborted on the cost limit, so pipelines notice the
 	// review was incomplete.

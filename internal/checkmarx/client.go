@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,18 +21,20 @@ type Client struct {
 	apiKey  string
 
 	http *http.Client
+	log  *slog.Logger
 
 	mu       sync.Mutex
 	token    string
 	tokenExp time.Time
 }
 
-// Options configure a Client. HTTPClient and Now are primarily for testing.
+// Options configure a Client. HTTPClient and Logger are optional.
 type Options struct {
 	BaseURI    string
 	Tenant     string
 	APIKey     string
 	HTTPClient *http.Client
+	Logger     *slog.Logger
 }
 
 // New creates a Client. BaseURI should have no trailing slash.
@@ -40,11 +43,16 @@ func New(opts Options) *Client {
 	if hc == nil {
 		hc = &http.Client{Timeout: 60 * time.Second}
 	}
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
 	return &Client{
 		baseURI: strings.TrimRight(opts.BaseURI, "/"),
 		tenant:  opts.Tenant,
 		apiKey:  opts.APIKey,
 		http:    hc,
+		log:     logger,
 	}
 }
 
@@ -60,9 +68,11 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 	defer c.mu.Unlock()
 
 	if c.token != "" && time.Now().Before(c.tokenExp) {
+		c.log.Debug("using cached access token")
 		return c.token, nil
 	}
 
+	c.log.Debug("exchanging refresh token for access token", "tenant", c.tenant)
 	endpoint := fmt.Sprintf("%s/auth/realms/%s/protocol/openid-connect/token", c.baseURI, c.tenant)
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
@@ -128,14 +138,21 @@ func (c *Client) doJSON(ctx context.Context, method, path string, query url.Valu
 		req.Header.Set("Content-Type", contentType)
 	}
 
+	c.log.Debug("checkmarx request", "method", method, "path", path)
+	start := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
+		c.log.Error("checkmarx request errored", "method", method, "path", path, "err", err)
 		return fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
+	c.log.Debug("checkmarx response", "method", method, "path", path,
+		"status", resp.StatusCode, "duration", time.Since(start))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		c.log.Warn("checkmarx request failed", "method", method, "path", path,
+			"status", resp.StatusCode, "body", truncate(string(respBody), 1000))
 		return fmt.Errorf("%s %s: status %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 
@@ -143,7 +160,18 @@ func (c *Client) doJSON(ctx context.Context, method, path string, query url.Valu
 		return nil
 	}
 	if err := json.Unmarshal(respBody, out); err != nil {
+		c.log.Error("decoding response failed", "method", method, "path", path,
+			"body", truncate(string(respBody), 1000), "err", err)
 		return fmt.Errorf("decoding %s %s response: %w", method, path, err)
 	}
 	return nil
+}
+
+// truncate trims s to at most n characters, appending an ellipsis if cut.
+func truncate(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }

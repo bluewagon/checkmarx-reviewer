@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 	"time"
@@ -88,13 +89,14 @@ type CLIReviewer struct {
 	timeout time.Duration
 	agentic bool
 	workDir string
+	log     *slog.Logger
 	run     runner
 }
 
 // NewCLIReviewer builds a reviewer for the named agent ("claude" or "copilot").
 // model may be empty to use the agent's default. binOverride, when non-empty,
 // replaces the default binary name. It verifies the binary is on PATH.
-func NewCLIReviewer(agent, model, binOverride string, timeout time.Duration, agentic bool, workDir string) (*CLIReviewer, error) {
+func NewCLIReviewer(agent, model, binOverride string, timeout time.Duration, agentic bool, workDir string, logger *slog.Logger) (*CLIReviewer, error) {
 	spec, ok := agentSpecs[agent]
 	if !ok {
 		return nil, fmt.Errorf("unknown agent %q (supported: %s)", agent, strings.Join(SupportedAgents(), ", "))
@@ -112,7 +114,10 @@ func NewCLIReviewer(agent, model, binOverride string, timeout time.Duration, age
 	if timeout <= 0 {
 		timeout = DefaultAgentTimeout
 	}
-	return &CLIReviewer{agent: agent, spec: spec, bin: bin, model: model, timeout: timeout, agentic: agentic, workDir: workDir, run: execRunner}, nil
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	return &CLIReviewer{agent: agent, spec: spec, bin: bin, model: model, timeout: timeout, agentic: agentic, workDir: workDir, log: logger, run: execRunner}, nil
 }
 
 // Model returns the effective model (may be empty for an agent default).
@@ -147,14 +152,24 @@ func (r *CLIReviewer) Review(ctx context.Context, findings []Finding) (map[strin
 	if r.agentic {
 		dir = r.workDir
 	}
+	ids := findingIDs(findings)
+	r.log.Debug("agent invocation", "agent", r.agent, "model", r.model,
+		"batchSize", len(findings), "workDir", dir, "args", strings.Join(args, " "))
+
 	stdout, stderr, err := r.run(ctx, r.bin, args, stdin, dir)
 	if err != nil {
+		// Log the full stderr for diagnosis; keep the returned error short so it
+		// stays readable in the report.
+		r.log.Error("agent invocation failed", "agent", r.agent, "ids", ids,
+			"err", err, "stderr", strings.TrimSpace(string(stderr)))
 		return nil, Usage{}, fmt.Errorf("%s invocation failed: %w: %s", r.agent, err, truncate(string(stderr), 500))
 	}
 
 	text, usage := r.spec.extract(stdout)
 	verdicts, err := extractVerdicts(text)
 	if err != nil {
+		r.log.Error("agent output not parseable", "agent", r.agent, "ids", ids,
+			"outputLen", len(text), "output", strings.TrimSpace(text))
 		return nil, usage, fmt.Errorf("%s: %w; output was: %s", r.agent, err, truncate(text, 500))
 	}
 
@@ -352,6 +367,15 @@ func firstJSONArray(s string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// findingIDs collects the ids of a batch for log context.
+func findingIDs(findings []Finding) []string {
+	ids := make([]string, len(findings))
+	for i, f := range findings {
+		ids[i] = f.ID
+	}
+	return ids
 }
 
 func truncate(s string, n int) string {

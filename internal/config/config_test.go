@@ -20,6 +20,7 @@ func setEnv(t *testing.T) {
 	t.Setenv("CX_AI_COST_LIMIT", "")
 	t.Setenv("CX_BITBUCKET_TOKEN", "")
 	t.Setenv("CX_AI_AGENTIC_SOURCE", "")
+	t.Setenv("CX_VERBOSE", "")
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -45,6 +46,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.AgenticSource {
 		t.Errorf("agentic source should default to false")
+	}
+	if cfg.Verbose {
+		t.Errorf("verbose should default to false")
 	}
 	if cfg.BaseURI != "https://us.ast.checkmarx.net" {
 		t.Errorf("trailing slash not trimmed: %q", cfg.BaseURI)
@@ -121,6 +125,17 @@ func TestLoadAgenticSourceFlag(t *testing.T) {
 	}
 	if !cfg.AgenticSource {
 		t.Error("--agentic-source should set AgenticSource true")
+	}
+}
+
+func TestLoadVerboseFlag(t *testing.T) {
+	setEnv(t)
+	cfg, err := Load([]string{"--scan-id", "s", "--repo-path", t.TempDir(), "--verbose"})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Verbose {
+		t.Error("--verbose should set Verbose true")
 	}
 }
 

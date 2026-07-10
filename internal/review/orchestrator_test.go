@@ -1,8 +1,11 @@
 package review
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -23,6 +26,7 @@ type fakeCx struct {
 	results []checkmarx.Result
 	history map[string][]checkmarx.Predicate
 	posts   []postCall
+	postErr error // when set, PostPredicate returns it instead of succeeding
 }
 
 func (f *fakeCx) GetScan(context.Context, string) (*checkmarx.Scan, error) { return f.scan, nil }
@@ -33,6 +37,9 @@ func (f *fakeCx) GetPredicateHistory(_ context.Context, sim, _ string) ([]checkm
 	return f.history[sim], nil
 }
 func (f *fakeCx) PostPredicate(_ context.Context, sim, proj, sev, state, comment string) error {
+	if f.postErr != nil {
+		return f.postErr
+	}
 	f.posts = append(f.posts, postCall{sim, proj, sev, state, comment})
 	return nil
 }
@@ -70,7 +77,7 @@ func (f *fakeReviewer) Review(_ context.Context, findings []ai.Finding) (map[str
 
 func result(sim int64) checkmarx.Result {
 	return checkmarx.Result{
-		SimilarityID: sim,
+		SimilarityID: checkmarx.SimilarityID(sim),
 		Severity:     checkmarx.SeverityHigh,
 		Data:         checkmarx.ResultData{QueryName: "SQL_Injection", Nodes: []checkmarx.Node{{FileName: "a.go", Line: 1}}},
 	}
@@ -301,6 +308,37 @@ func TestCostLimitStopsRunAndMarksRemaining(t *testing.T) {
 	}
 	if skipped != 3 {
 		t.Errorf("expected 3 SKIPPED_COST_LIMIT findings, got %d", skipped)
+	}
+}
+
+func TestPerFindingErrorIsLoggedLive(t *testing.T) {
+	cx := &fakeCx{
+		scan:    &checkmarx.Scan{ProjectID: "proj-1"},
+		results: results(1),
+		postErr: errors.New("boom-503"),
+	}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	o := New(cx, &fakeReviewer{v: ai.Verdict{Verdict: ai.VerdictFalsePositive, Confidence: 0.99, Explanation: "x"}},
+		source.NewReader(t.TempDir(), 2),
+		Options{ScanID: "scan-1", Model: "claude-test", BatchSize: 10, FPThreshold: 0.90},
+		logger)
+
+	rep := run(t, o)
+
+	if rep.Errors != 1 {
+		t.Fatalf("expected 1 error, got %d", rep.Errors)
+	}
+	// The failure must be surfaced live with context, not just counted.
+	out := buf.String()
+	if !strings.Contains(out, "posting predicate failed") {
+		t.Errorf("log missing the failure message:\n%s", out)
+	}
+	if !strings.Contains(out, "similarityId=1") {
+		t.Errorf("log missing the finding id context:\n%s", out)
+	}
+	if !strings.Contains(out, "boom-503") {
+		t.Errorf("log missing the underlying cause:\n%s", out)
 	}
 }
 

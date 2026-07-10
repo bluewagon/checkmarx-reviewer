@@ -107,15 +107,43 @@ func TestListHighToVerifyPagination(t *testing.T) {
 	if len(got) != resultsPageSize+5 {
 		t.Fatalf("expected %d results, got %d", resultsPageSize+5, len(got))
 	}
-	if got[0].SimilarityID != 0 || got[resultsPageSize].SimilarityID != int64(resultsPageSize) {
+	if got[0].SimilarityID != 0 || got[resultsPageSize].SimilarityID != SimilarityID(resultsPageSize) {
 		t.Errorf("results not assembled in order: first=%d pageBoundary=%d", got[0].SimilarityID, got[resultsPageSize].SimilarityID)
+	}
+}
+
+func TestSimilarityIDDecodesNumberOrString(t *testing.T) {
+	cases := map[string]SimilarityID{
+		`{"similarityID": 1234567890}`:   1234567890, // bare JSON number
+		`{"similarityID": "1234567890"}`: 1234567890, // quoted numeric string
+		`{"similarityID": -42}`:          -42,        // negative number
+		`{"similarityID": "-42"}`:        -42,        // negative in a string
+		`{"similarityID": null}`:         0,          // null -> 0
+		`{"similarityID": ""}`:           0,          // empty string -> 0
+		`{}`:                             0,          // absent -> 0
+	}
+	for body, want := range cases {
+		var r Result
+		if err := json.Unmarshal([]byte(body), &r); err != nil {
+			t.Errorf("Unmarshal(%s): %v", body, err)
+			continue
+		}
+		if r.SimilarityID != want {
+			t.Errorf("Unmarshal(%s) similarityID = %d, want %d", body, r.SimilarityID, want)
+		}
+	}
+
+	// A non-numeric string is a hard error.
+	var r Result
+	if err := json.Unmarshal([]byte(`{"similarityID":"abc"}`), &r); err == nil {
+		t.Error("expected error decoding non-numeric similarityID")
 	}
 }
 
 func makeResults(n, base int) []Result {
 	out := make([]Result, n)
 	for i := range out {
-		out[i] = Result{SimilarityID: int64(base + i), Severity: SeverityHigh, State: StateToVerify}
+		out[i] = Result{SimilarityID: SimilarityID(base + i), Severity: SeverityHigh, State: StateToVerify}
 	}
 	return out
 }

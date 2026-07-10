@@ -14,6 +14,7 @@ import (
 
 	"github.com/bluewagon/checkmarx-reviewer/internal/ai"
 	"github.com/bluewagon/checkmarx-reviewer/internal/vcs"
+	"github.com/joho/godotenv"
 )
 
 // Config holds all resolved runtime settings for a single review run.
@@ -42,6 +43,9 @@ type Config struct {
 	// AgenticSource lets the agent read/search the repo for extra context instead
 	// of relying only on the inlined snippets.
 	AgenticSource bool
+	// Verbose enables debug-level logging (HTTP requests, agent invocations, full
+	// error causes).
+	Verbose bool
 }
 
 // Defaults for optional settings.
@@ -58,6 +62,7 @@ const (
 // Load parses flags from args (excluding the program name) and reads the
 // required environment variables, returning a validated Config.
 func Load(args []string) (*Config, error) {
+	_ = godotenv.Load()
 	fs := flag.NewFlagSet("checkmarx-reviewer", flag.ContinueOnError)
 
 	var timeoutSeconds int
@@ -75,6 +80,7 @@ func Load(args []string) (*Config, error) {
 	fs.StringVar(&cfg.ReportPath, "report", DefaultReportPath, "Path to write the JSON report")
 	fs.BoolVar(&cfg.DryRun, "dry-run", false, "Compute verdicts and intended actions without writing to Checkmarx")
 	fs.BoolVar(&cfg.AgenticSource, "agentic-source", envBoolOr("CX_AI_AGENTIC_SOURCE", false), "Let the agent read/search the repo for extra context instead of only the inlined snippets (uses more time per finding)")
+	fs.BoolVar(&cfg.Verbose, "verbose", envBoolOr("CX_VERBOSE", false), "Enable debug logging (HTTP requests, agent invocations, full error causes)")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err

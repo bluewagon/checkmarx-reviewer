@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
 	"testing"
@@ -84,7 +85,7 @@ func (c *captureRunner) run(_ context.Context, bin string, args []string, stdin 
 
 func newReviewerForTest(agent string, run runner) *CLIReviewer {
 	spec := agentSpecs[agent]
-	return &CLIReviewer{agent: agent, spec: spec, bin: spec.bin, model: spec.defaultModel, timeout: time.Second, run: run}
+	return &CLIReviewer{agent: agent, spec: spec, bin: spec.bin, model: spec.defaultModel, timeout: time.Second, log: slog.New(slog.DiscardHandler), run: run}
 }
 
 // newAgenticReviewerForTest builds a reviewer with agentic mode and a work dir.
@@ -225,7 +226,7 @@ func TestReviewEmptyBatch(t *testing.T) {
 }
 
 func TestNewCLIReviewerUnknownAgent(t *testing.T) {
-	if _, err := NewCLIReviewer("gemini", "", "", 0, false, ""); err == nil {
+	if _, err := NewCLIReviewer("gemini", "", "", 0, false, "", nil); err == nil {
 		t.Fatal("expected error for unknown agent")
 	}
 }
