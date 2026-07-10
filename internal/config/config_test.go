@@ -18,6 +18,7 @@ func setEnv(t *testing.T) {
 	t.Setenv("CX_AI_AGENT_BIN", "")
 	t.Setenv("CX_AI_BATCH_SIZE", "")
 	t.Setenv("CX_AI_COST_LIMIT", "")
+	t.Setenv("CX_BITBUCKET_TOKEN", "")
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -91,5 +92,28 @@ func TestLoadRejectsMissingRepoPath(t *testing.T) {
 	_, err := Load([]string{"--scan-id", "s", "--repo-path", "/no/such/dir/really"})
 	if err == nil || !strings.Contains(err.Error(), "repo-path") {
 		t.Fatalf("expected repo-path error, got %v", err)
+	}
+}
+
+func TestLoadAcceptsBitbucketURLWithToken(t *testing.T) {
+	setEnv(t)
+	t.Setenv("CX_BITBUCKET_TOKEN", "tok")
+	url := "https://bitbucket.example.com/projects/PROJ/repos/my-repo/browse"
+	cfg, err := Load([]string{"--scan-id", "s", "--repo-path", url})
+	if err != nil {
+		t.Fatalf("Load with URL repo-path: %v", err)
+	}
+	// The URL is kept verbatim; normalization/cloning happens at run time.
+	if cfg.RepoPath != url || cfg.BitbucketToken != "tok" {
+		t.Errorf("unexpected cfg: repoPath=%q token=%q", cfg.RepoPath, cfg.BitbucketToken)
+	}
+}
+
+func TestLoadRejectsBitbucketURLWithoutToken(t *testing.T) {
+	setEnv(t) // clears CX_BITBUCKET_TOKEN
+	url := "https://bitbucket.example.com/scm/PROJ/my-repo.git"
+	_, err := Load([]string{"--scan-id", "s", "--repo-path", url})
+	if err == nil || !strings.Contains(err.Error(), "CX_BITBUCKET_TOKEN") {
+		t.Fatalf("expected CX_BITBUCKET_TOKEN error, got %v", err)
 	}
 }

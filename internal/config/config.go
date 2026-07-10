@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bluewagon/checkmarx-reviewer/internal/ai"
+	"github.com/bluewagon/checkmarx-reviewer/internal/vcs"
 )
 
 // Config holds all resolved runtime settings for a single review run.
@@ -21,6 +22,9 @@ type Config struct {
 	APIKey  string // CX_APIKEY — refresh token
 	BaseURI string // CX_BASE_URI — e.g. https://us.ast.checkmarx.net
 	Tenant  string // CX_TENANT — tenant name for the auth realm
+
+	// Bitbucket (from environment). Used only when --repo-path is a Bitbucket URL.
+	BitbucketToken string // CX_BITBUCKET_TOKEN — HTTP access token for cloning
 
 	// Run parameters (from flags).
 	ScanID       string
@@ -56,7 +60,7 @@ func Load(args []string) (*Config, error) {
 	var timeoutSeconds int
 	cfg := &Config{}
 	fs.StringVar(&cfg.ScanID, "scan-id", "", "Checkmarx scan ID to review (required)")
-	fs.StringVar(&cfg.RepoPath, "repo-path", "", "Path to a local checkout matching the scanned commit (required)")
+	fs.StringVar(&cfg.RepoPath, "repo-path", "", "Local checkout matching the scanned commit, or a Bitbucket clone/browse URL to shallow-clone (required)")
 	fs.StringVar(&cfg.Agent, "agent", envOr("CX_AI_AGENT", DefaultAgent), "AI agent CLI to use: "+strings.Join(ai.SupportedAgents(), " | "))
 	fs.StringVar(&cfg.AgentBin, "agent-bin", os.Getenv("CX_AI_AGENT_BIN"), "Override the agent binary name/path (default: the agent's own command)")
 	fs.StringVar(&cfg.Model, "model", os.Getenv("CX_AI_MODEL"), "Model id to pass to the agent (default: the agent's default)")
@@ -77,6 +81,7 @@ func Load(args []string) (*Config, error) {
 	cfg.APIKey = os.Getenv("CX_APIKEY")
 	cfg.BaseURI = strings.TrimRight(os.Getenv("CX_BASE_URI"), "/")
 	cfg.Tenant = os.Getenv("CX_TENANT")
+	cfg.BitbucketToken = os.Getenv("CX_BITBUCKET_TOKEN")
 
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -122,6 +127,15 @@ func (c *Config) validate() error {
 	}
 	if c.BatchSize < 1 {
 		return errors.New("--batch-size must be >= 1")
+	}
+
+	// A Bitbucket URL is cloned at runtime, so it needn't exist locally, but it
+	// does require an access token to authenticate the clone.
+	if vcs.IsRemoteURL(c.RepoPath) {
+		if c.BitbucketToken == "" {
+			return errors.New("--repo-path is a URL but CX_BITBUCKET_TOKEN is not set")
+		}
+		return nil
 	}
 
 	info, err := os.Stat(c.RepoPath)

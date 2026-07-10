@@ -18,6 +18,7 @@ import (
 	"github.com/bluewagon/checkmarx-reviewer/internal/report"
 	"github.com/bluewagon/checkmarx-reviewer/internal/review"
 	"github.com/bluewagon/checkmarx-reviewer/internal/source"
+	"github.com/bluewagon/checkmarx-reviewer/internal/vcs"
 )
 
 func main() {
@@ -47,7 +48,21 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	reader := source.NewReader(cfg.RepoPath, cfg.ContextLines)
+	repoRoot := cfg.RepoPath
+	if vcs.IsRemoteURL(cfg.RepoPath) {
+		cloneURL, err := vcs.NormalizeBitbucketURL(cfg.RepoPath)
+		if err != nil {
+			return err
+		}
+		logf("Cloning %s (shallow) …", cloneURL)
+		dir, cleanup, err := vcs.CloneToTemp(ctx, cloneURL, cfg.BitbucketToken)
+		if err != nil {
+			return fmt.Errorf("cloning repo: %w", err)
+		}
+		defer cleanup()
+		repoRoot = dir
+	}
+	reader := source.NewReader(repoRoot, cfg.ContextLines)
 
 	orch := review.New(cx, reviewer, reader, review.Options{
 		ScanID:       cfg.ScanID,
