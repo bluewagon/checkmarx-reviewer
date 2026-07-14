@@ -12,10 +12,12 @@ import (
 	"unicode/utf8"
 )
 
-// Supported agent CLIs.
+// Supported agents. Claude and Copilot drive the respective CLIs as
+// subprocesses; Anthropic calls the Anthropic API directly (see api.go).
 const (
-	AgentClaude  = "claude"  // Claude Code CLI (`claude`)
-	AgentCopilot = "copilot" // GitHub Copilot CLI (`copilot`)
+	AgentClaude    = "claude"    // Claude Code CLI (`claude`)
+	AgentCopilot   = "copilot"   // GitHub Copilot CLI (`copilot`)
+	AgentAnthropic = "anthropic" // Anthropic API (no CLI; ANTHROPIC_API_KEY auth)
 )
 
 // DefaultAgentTimeout bounds a single agent invocation.
@@ -86,8 +88,8 @@ var agentSpecs = map[string]agentSpec{
 // network; deny rules take precedence over any allow.
 const copilotNonAgenticDenyTools = "shell,write,edit,read,view,grep,glob,web_fetch,web_search"
 
-// SupportedAgents lists the agent identifiers accepted by NewCLIReviewer.
-func SupportedAgents() []string { return []string{AgentClaude, AgentCopilot} }
+// SupportedAgents lists the agent identifiers accepted by NewReviewer.
+func SupportedAgents() []string { return []string{AgentClaude, AgentCopilot, AgentAnthropic} }
 
 // runner executes a command in dir (empty = inherit); abstracted so tests can
 // inject a fake.
@@ -196,11 +198,16 @@ func (r *CLIReviewer) Review(ctx context.Context, findings []Finding) (map[strin
 		return nil, usage, fmt.Errorf("%s: %w; output was: %s", r.agent, err, truncate(text, 500))
 	}
 
-	// Single-item robustness: if the agent omitted the id, backfill it.
+	return mapVerdicts(findings, verdicts), usage, nil
+}
+
+// mapVerdicts validates and keys parsed verdicts by finding ID, backfilling the
+// id on a single-item batch. Invalid verdicts are dropped from the map so the
+// caller can recover (re-review or record an error).
+func mapVerdicts(findings []Finding, verdicts []Verdict) map[string]Verdict {
 	if len(findings) == 1 && len(verdicts) == 1 && verdicts[0].ID == "" {
 		verdicts[0].ID = findings[0].ID
 	}
-
 	out := make(map[string]Verdict, len(verdicts))
 	for _, v := range verdicts {
 		if v.ID == "" {
@@ -213,7 +220,7 @@ func (r *CLIReviewer) Review(ctx context.Context, findings []Finding) (map[strin
 		nv.ID = v.ID
 		out[v.ID] = nv
 	}
-	return out, usage, nil
+	return out
 }
 
 // execRunner is the production runner backed by os/exec. dir, when non-empty,

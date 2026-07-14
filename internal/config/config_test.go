@@ -75,6 +75,17 @@ func TestLoadMissingRequired(t *testing.T) {
 	}
 }
 
+func TestLoadAcceptsAnthropicAgent(t *testing.T) {
+	setEnv(t)
+	cfg, err := Load([]string{"--scan-id", "s", "--repo-path", t.TempDir(), "--agent", "anthropic"})
+	if err != nil {
+		t.Fatalf("Load with --agent anthropic: %v", err)
+	}
+	if cfg.Agent != ai.AgentAnthropic {
+		t.Errorf("agent = %q, want %q", cfg.Agent, ai.AgentAnthropic)
+	}
+}
+
 func TestLoadRejectsUnknownAgent(t *testing.T) {
 	setEnv(t)
 	_, err := Load([]string{"--scan-id", "s", "--repo-path", t.TempDir(), "--agent", "gemini"})

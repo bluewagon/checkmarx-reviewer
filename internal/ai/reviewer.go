@@ -6,6 +6,8 @@ package ai
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"time"
 )
 
 // Verdict classifications returned by the model.
@@ -82,6 +84,24 @@ func (u *Usage) Add(o Usage) {
 // invocation failure (the whole batch failed).
 type Reviewer interface {
 	Review(ctx context.Context, findings []Finding) (map[string]Verdict, Usage, error)
+}
+
+// NamedReviewer is a Reviewer that also reports which agent/model it drives.
+type NamedReviewer interface {
+	Reviewer
+	Model() string
+	Agent() string
+}
+
+// NewReviewer builds the reviewer for the named agent: the Anthropic API
+// reviewer for "anthropic" (binOverride is ignored), or a CLI reviewer for
+// "claude"/"copilot". model may be empty to use the agent's default. When
+// agentic is true the agent may read/search the repo checked out at workDir.
+func NewReviewer(agent, model, binOverride string, timeout time.Duration, agentic bool, workDir string, logger *slog.Logger) (NamedReviewer, error) {
+	if agent == AgentAnthropic {
+		return NewAPIReviewer(model, timeout, agentic, workDir, logger)
+	}
+	return NewCLIReviewer(agent, model, binOverride, timeout, agentic, workDir, logger)
 }
 
 // normalize validates and clamps a verdict produced by an agent.

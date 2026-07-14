@@ -67,7 +67,7 @@ func run(args []string) error {
 		repoRoot = dir
 	}
 
-	reviewer, err := ai.NewCLIReviewer(cfg.Agent, cfg.Model, cfg.AgentBin, cfg.AgentTimeout, cfg.AgenticSource, repoRoot, logger)
+	reviewer, err := ai.NewReviewer(cfg.Agent, cfg.Model, cfg.AgentBin, cfg.AgentTimeout, cfg.AgenticSource, repoRoot, logger)
 	if err != nil {
 		return err
 	}

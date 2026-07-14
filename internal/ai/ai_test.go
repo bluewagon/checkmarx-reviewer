@@ -64,7 +64,7 @@ func TestBuildBatchPromptAgenticInvitesRepoAccess(t *testing.T) {
 	f := Finding{
 		ID:        "sim-1",
 		QueryName: "Reflected_XSS",
-		Nodes: []NodeContext{{Order: 1, FileName: "page.jsp", Line: 3, Snippet: "   3| <%= data %>", Resolved: true, StartLine: 1, EndLine: 5}},
+		Nodes:     []NodeContext{{Order: 1, FileName: "page.jsp", Line: 3, Snippet: "   3| <%= data %>", Resolved: true, StartLine: 1, EndLine: 5}},
 	}
 
 	agentic := buildBatchPrompt([]Finding{f}, true)

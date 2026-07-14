@@ -5,12 +5,12 @@ import "testing"
 func TestIsRemoteURL(t *testing.T) {
 	cases := map[string]bool{
 		"https://bitbucket.example.com/scm/p/r.git": true,
-		"http://bitbucket.example.com/x":             true,
-		"  https://host/x  ":                         true, // surrounding space tolerated
-		"./repo":                                     false,
-		"/abs/path/to/repo":                          false,
-		"repo":                                       false,
-		"git@bitbucket.example.com:p/r.git":          false, // ssh not handled here
+		"http://bitbucket.example.com/x":            true,
+		"  https://host/x  ":                        true, // surrounding space tolerated
+		"./repo":                                    false,
+		"/abs/path/to/repo":                         false,
+		"repo":                                      false,
+		"git@bitbucket.example.com:p/r.git":         false, // ssh not handled here
 	}
 	for in, want := range cases {
 		if got := IsRemoteURL(in); got != want {
