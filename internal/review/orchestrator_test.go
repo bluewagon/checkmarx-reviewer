@@ -437,6 +437,119 @@ func TestCacheOrderingGroupsBatchesByQuery(t *testing.T) {
 	}
 }
 
+func TestDuplicateSimilarityIDsReviewedOnce(t *testing.T) {
+	// Rows 1,1,2: similarityID 1 appears twice; it must be reviewed and posted once.
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: results(1, 1, 2)}
+	rev := &fakeReviewer{v: ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"}}
+	o := newOrchRev(t, cx, rev, 0.90, false, 10)
+
+	rep := run(t, o)
+
+	if rep.TotalFindings != 3 || rep.UniqueFindings != 2 {
+		t.Errorf("total=%d unique=%d, want 3/2", rep.TotalFindings, rep.UniqueFindings)
+	}
+	if rep.Reviewed != 2 || len(cx.posts) != 2 {
+		t.Errorf("reviewed=%d posts=%d, want 2/2 (one per unique similarityID)", rep.Reviewed, len(cx.posts))
+	}
+	if want := []int{2}; fmt.Sprint(rev.batchSizes) != fmt.Sprint(want) {
+		t.Errorf("batch sizes = %v, want %v (duplicates folded before batching)", rev.batchSizes, want)
+	}
+	if len(rep.Findings) != 2 {
+		t.Fatalf("report findings = %d, want 2", len(rep.Findings))
+	}
+	if rep.Findings[0].SimilarityID != "1" || rep.Findings[0].Duplicates != 1 {
+		t.Errorf("finding 1 should record 1 duplicate: %+v", rep.Findings[0])
+	}
+	if rep.Findings[1].Duplicates != 0 {
+		t.Errorf("finding 2 should record no duplicates: %+v", rep.Findings[1])
+	}
+}
+
+// cancellingReviewer answers its first call then cancels the run's context,
+// simulating Ctrl-C mid-review.
+type cancellingReviewer struct {
+	inner  fakeReviewer
+	cancel context.CancelFunc
+}
+
+func (c *cancellingReviewer) Review(ctx context.Context, findings []ai.Finding) (map[string]ai.Verdict, ai.Usage, error) {
+	out, u, err := c.inner.Review(ctx, findings)
+	c.cancel()
+	return out, u, err
+}
+
+func TestCancelledRunSkipsRemaining(t *testing.T) {
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: results(1, 2, 3, 4)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rev := &cancellingReviewer{
+		inner:  fakeReviewer{v: ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"}},
+		cancel: cancel,
+	}
+	o := New(cx, rev, source.NewReader(t.TempDir(), 2), Options{
+		ScanID: "scan-1", Model: "claude-test", BatchSize: 1, FPThreshold: 0.90,
+	}, nil)
+
+	rep, err := o.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run must still return the report on cancellation: %v", err)
+	}
+	if !rep.Aborted || !strings.Contains(rep.AbortReason, "cancelled") {
+		t.Errorf("expected cancelled abort, got aborted=%v reason=%q", rep.Aborted, rep.AbortReason)
+	}
+	// Only the first batch reviews; nothing posts (cancel precedes phase 3) and
+	// the rest is marked cancelled instead of churning through the agent.
+	if got := len(rev.inner.batchSizes); got != 1 {
+		t.Errorf("Review calls after cancel = %d, want 1", got)
+	}
+	if len(cx.posts) != 0 {
+		t.Errorf("cancelled run must not post, got %d posts", len(cx.posts))
+	}
+	cancelled := 0
+	for _, fr := range rep.Findings {
+		if fr.Action == report.ActionSkippedCancelled {
+			cancelled++
+		}
+	}
+	if cancelled != 4 {
+		t.Errorf("expected all 4 findings SKIPPED_CANCELLED, got %d: %+v", cancelled, rep.Findings)
+	}
+}
+
+func TestFallbackRespectsBudget(t *testing.T) {
+	// One batch of 3 fails as a whole; each individual retry costs $0.05 with a
+	// $0.05 limit, so only the first retry may run.
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: results(1, 2, 3)}
+	rev := &fakeReviewer{
+		v:               ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"},
+		errIfLargerThan: 1,
+		usagePerCall:    ai.Usage{InputTokens: 10, OutputTokens: 2, CostUSD: 0.05},
+	}
+	o := New(cx, rev, source.NewReader(t.TempDir(), 2), Options{
+		ScanID: "scan-1", Model: "claude-test", BatchSize: 3, FPThreshold: 0.90, CostLimitUSD: 0.05,
+	}, nil)
+
+	rep := run(t, o)
+
+	// Batch call (fails, still records usage → at limit) + zero or one individual
+	// retries before the budget gate stops the fallback loop.
+	if calls := len(rev.batchSizes); calls != 1 {
+		t.Errorf("Review calls = %d, want 1 (failed batch, then budget stops fallback)", calls)
+	}
+	if !rep.Aborted {
+		t.Error("run should be marked aborted when fallback hits the cost limit")
+	}
+	budgetSkipped := 0
+	for _, fr := range rep.Findings {
+		if fr.Action == report.ActionSkippedBudget {
+			budgetSkipped++
+		}
+	}
+	if budgetSkipped != 3 {
+		t.Errorf("expected 3 SKIPPED_COST_LIMIT findings, got %d: %+v", budgetSkipped, rep.Findings)
+	}
+}
+
 func TestBatchInvocationErrorFallsBackToIndividual(t *testing.T) {
 	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: results(1, 2)}
 	// Any batch larger than 1 fails; individual retries succeed.

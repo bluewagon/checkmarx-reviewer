@@ -13,6 +13,7 @@ const (
 	ActionProposedNotExploit = "PROPOSED_NOT_EXPLOITABLE" // comment posted + state changed
 	ActionSkippedAlreadyDone = "SKIPPED_ALREADY_REVIEWED" // prior AI comment found
 	ActionSkippedBudget      = "SKIPPED_COST_LIMIT"       // run stopped: cost limit reached
+	ActionSkippedCancelled   = "SKIPPED_CANCELLED"        // run cancelled (signal/timeout)
 	ActionError              = "ERROR"                    // per-finding failure
 )
 
@@ -32,6 +33,7 @@ type FindingResult struct {
 	NodesTotal    int     `json:"nodesTotal"`
 	NodesResolved int     `json:"nodesResolved"`
 	CommentPosted bool    `json:"commentPosted"`
+	Duplicates    int     `json:"duplicates,omitempty"` // extra result rows sharing this similarityID
 	Error         string  `json:"error,omitempty"`
 }
 
@@ -47,6 +49,7 @@ type Report struct {
 	DryRun         bool      `json:"dryRun"`
 	GeneratedAt    time.Time `json:"generatedAt"`
 	TotalFindings  int       `json:"totalFindings"`
+	UniqueFindings int       `json:"uniqueFindings"` // distinct similarityIDs (each reviewed once)
 	Reviewed       int       `json:"reviewed"`
 	Skipped        int       `json:"skipped"`
 	Errors         int       `json:"errors"`

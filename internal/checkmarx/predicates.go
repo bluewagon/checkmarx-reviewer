@@ -1,7 +1,6 @@
 package checkmarx
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -45,5 +44,5 @@ func (c *Client) PostPredicate(ctx context.Context, similarityID, projectID, sev
 		return err
 	}
 
-	return c.doJSON(ctx, http.MethodPost, "/api/sast-results-predicates", nil, bytes.NewReader(body), "application/json", nil)
+	return c.doJSON(ctx, http.MethodPost, "/api/sast-results-predicates", nil, body, "application/json", nil)
 }

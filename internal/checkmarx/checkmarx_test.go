@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testTenant = "test-tenant"
@@ -216,14 +217,86 @@ func TestPostPredicateBody(t *testing.T) {
 }
 
 func TestErrorStatusPropagates(t *testing.T) {
+	// 404 is non-retryable, so this exercises the immediate-failure path.
 	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/token") {
 			writeJSON(w, tokenResponse{AccessToken: "t", ExpiresIn: 600})
 			return
 		}
-		http.Error(w, "boom", http.StatusInternalServerError)
+		http.Error(w, "no such scan", http.StatusNotFound)
 	})
 	if _, err := c.GetScan(context.Background(), "scan-1"); err == nil {
-		t.Fatal("expected error on 500 response")
+		t.Fatal("expected error on 404 response")
+	}
+}
+
+func TestTransientStatusIsRetried(t *testing.T) {
+	var apiCalls int
+	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/token") {
+			writeJSON(w, tokenResponse{AccessToken: "t", ExpiresIn: 600})
+			return
+		}
+		apiCalls++
+		if apiCalls == 1 {
+			http.Error(w, "slow down", http.StatusTooManyRequests)
+			return
+		}
+		writeJSON(w, Scan{ID: "scan-1", ProjectID: "proj-1"})
+	})
+	c.retryBackoff = time.Millisecond
+
+	scan, err := c.GetScan(context.Background(), "scan-1")
+	if err != nil {
+		t.Fatalf("GetScan should succeed after retry: %v", err)
+	}
+	if scan.ProjectID != "proj-1" || apiCalls != 2 {
+		t.Errorf("scan=%+v apiCalls=%d, want proj-1 after 2 calls", scan, apiCalls)
+	}
+}
+
+func TestRetryExhaustionFails(t *testing.T) {
+	var apiCalls int
+	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/token") {
+			writeJSON(w, tokenResponse{AccessToken: "t", ExpiresIn: 600})
+			return
+		}
+		apiCalls++
+		http.Error(w, "still broken", http.StatusServiceUnavailable)
+	})
+	c.retryBackoff = time.Millisecond
+
+	if _, err := c.GetScan(context.Background(), "scan-1"); err == nil {
+		t.Fatal("expected error once retries are exhausted")
+	}
+	if apiCalls != 3 {
+		t.Errorf("apiCalls = %d, want 3 (initial + 2 retries)", apiCalls)
+	}
+}
+
+func TestPostRetryResendsBody(t *testing.T) {
+	var bodies []string
+	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/token") {
+			writeJSON(w, tokenResponse{AccessToken: "t", ExpiresIn: 600})
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		if len(bodies) == 1 {
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	c.retryBackoff = time.Millisecond
+
+	err := c.PostPredicate(context.Background(), "sim-1", "proj-1", SeverityHigh, StateToVerify, "hello")
+	if err != nil {
+		t.Fatalf("PostPredicate should succeed after retry: %v", err)
+	}
+	if len(bodies) != 2 || bodies[0] != bodies[1] || !strings.Contains(bodies[1], `"sim-1"`) {
+		t.Errorf("retried POST must resend the identical body, got %q", bodies)
 	}
 }

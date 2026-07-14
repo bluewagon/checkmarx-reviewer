@@ -129,29 +129,38 @@ func (o *Orchestrator) Run(ctx context.Context) (*report.Report, error) {
 		return nil, fmt.Errorf("listing findings: %w", err)
 	}
 
+	// Deduplicate by similarityID: Checkmarx keys triage (history, predicates) at
+	// the similarityID level, so result rows sharing one are the same finding
+	// reached by different paths. Review the first occurrence once and record how
+	// many rows it stands for.
+	unique, dupes := dedupeBySimilarityID(results)
+
 	rep := &report.Report{
-		ScanID:        o.opts.ScanID,
-		ProjectID:     scan.ProjectID,
-		Agent:         o.opts.Agent,
-		Model:         o.opts.Model,
-		BatchSize:     o.opts.BatchSize,
-		Concurrency:   max(o.opts.Concurrency, 1),
-		FPThreshold:   o.opts.FPThreshold,
-		DryRun:        o.opts.DryRun,
-		GeneratedAt:   time.Now().UTC(),
-		TotalFindings: len(results),
+		ScanID:         o.opts.ScanID,
+		ProjectID:      scan.ProjectID,
+		Agent:          o.opts.Agent,
+		Model:          o.opts.Model,
+		BatchSize:      o.opts.BatchSize,
+		Concurrency:    max(o.opts.Concurrency, 1),
+		FPThreshold:    o.opts.FPThreshold,
+		DryRun:         o.opts.DryRun,
+		GeneratedAt:    time.Now().UTC(),
+		TotalFindings:  len(results),
+		UniqueFindings: len(unique),
 	}
 
 	n := max(o.opts.Concurrency, 1)
-	o.log.Info("reviewing findings", "count", len(results), "scanId", o.opts.ScanID,
-		"projectId", scan.ProjectID, "batchSize", o.opts.BatchSize, "concurrency", n)
+	o.log.Info("reviewing findings", "count", len(results), "unique", len(unique),
+		"scanId", o.opts.ScanID, "projectId", scan.ProjectID,
+		"batchSize", o.opts.BatchSize, "concurrency", n)
 
 	// Phase 1: prepare each finding (idempotency check + source evidence). Each
 	// task writes a distinct index, so no locking is needed; the Checkmarx client
 	// is concurrency-safe.
-	items := make([]*item, len(results))
-	runConcurrent(n, len(results), func(i int) {
-		items[i] = o.prepare(ctx, scan.ProjectID, results[i])
+	items := make([]*item, len(unique))
+	runConcurrent(n, len(unique), func(i int) {
+		items[i] = o.prepare(ctx, scan.ProjectID, unique[i])
+		items[i].fr.Duplicates = dupes[unique[i].SimilarityID]
 	})
 
 	// Phase 2: review non-terminal findings in bounded batches, with per-finding
@@ -172,15 +181,21 @@ func (o *Orchestrator) Run(ctx context.Context) (*report.Report, error) {
 		rep.Findings = append(rep.Findings, it.fr)
 	}
 
-	// Record token/cost totals and any cost-limit abort on the report.
+	// Record token/cost totals and any abort (cost limit or cancellation) on the
+	// report.
+	spent := o.snapshotSpent()
 	rep.CostLimitUSD = o.opts.CostLimitUSD
-	rep.EstimatedCostUSD = o.spent.CostUSD
-	rep.InputTokens = o.spent.InputTokens
-	rep.OutputTokens = o.spent.OutputTokens
-	rep.TotalTokens = o.spent.TotalTokens()
-	if aborted {
+	rep.EstimatedCostUSD = spent.CostUSD
+	rep.InputTokens = spent.InputTokens
+	rep.OutputTokens = spent.OutputTokens
+	rep.TotalTokens = spent.TotalTokens()
+	switch {
+	case ctx.Err() != nil:
 		rep.Aborted = true
-		rep.AbortReason = fmt.Sprintf("cost limit $%.2f reached (spent $%.4f)", o.opts.CostLimitUSD, o.spent.CostUSD)
+		rep.AbortReason = "run cancelled before completion"
+	case aborted:
+		rep.Aborted = true
+		rep.AbortReason = fmt.Sprintf("cost limit $%.2f reached (spent $%.4f)", o.opts.CostLimitUSD, spent.CostUSD)
 	}
 
 	o.log.Info("review complete", "reviewed", rep.Reviewed, "skipped", rep.Skipped,
@@ -216,6 +231,13 @@ func (o *Orchestrator) prepare(ctx context.Context, projectID string, res checkm
 	if sink := sinkNode(res); sink != nil {
 		it.fr.SinkFile = sink.FileName
 		it.fr.SinkLine = sink.Line
+	}
+
+	// A cancelled run should not burn an API call per remaining finding.
+	if ctx.Err() != nil {
+		it.fr.Action = report.ActionSkippedCancelled
+		it.terminal = true
+		return it
 	}
 
 	history, err := o.cx.GetPredicateHistory(ctx, simID, projectID)
@@ -291,6 +313,13 @@ func (o *Orchestrator) reviewBatches(ctx context.Context, items []*item, n int) 
 		// by the time we check the budget. At n==1 that makes the stop exact; at
 		// n>1 overshoot is bounded to the batches still running.
 		sem <- struct{}{}
+		if ctx.Err() != nil {
+			<-sem // release the unused slot
+			o.log.Warn("run cancelled; stopping review", "unreviewedBatches", len(chunks)-i)
+			markSkipped(pending[ch.start:], report.ActionSkippedCancelled)
+			wg.Wait()
+			return false // cancellation abort is recorded by Run via ctx
+		}
 		if o.overBudget() {
 			<-sem // release the unused slot
 			o.log.Warn("cost limit reached; stopping",
@@ -305,7 +334,8 @@ func (o *Orchestrator) reviewBatches(ctx context.Context, items []*item, n int) 
 		go func(batchNum, start, end int) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			o.log.Info("reviewing batch", "batch", batchNum, "size", end-start)
+			o.log.Info("reviewing batch", "batch", batchNum, "size", end-start,
+				"query", pending[start].finding.QueryName)
 			o.reviewBatch(ctx, pending[start:end])
 		}(i+1, ch.start, ch.end)
 	}
@@ -313,8 +343,15 @@ func (o *Orchestrator) reviewBatches(ctx context.Context, items []*item, n int) 
 
 	if aborted {
 		// Mark every finding in the chunks we never dispatched as budget-skipped.
-		markBudgetSkipped(pending[chunks[dispatched].start:])
+		markSkipped(pending[chunks[dispatched].start:], report.ActionSkippedBudget)
 		return true
+	}
+	// The individual-fallback path inside a dispatched batch may itself have hit
+	// the cost limit (see reviewBatch); surface that as an abort too.
+	for _, it := range pending {
+		if it.fr.Action == report.ActionSkippedBudget {
+			return true
+		}
 	}
 	return false
 }
@@ -326,14 +363,14 @@ func (o *Orchestrator) snapshotSpent() ai.Usage {
 	return o.spent
 }
 
-// markBudgetSkipped records findings left unreviewed because the cost limit was
-// hit, so they appear in the report rather than silently disappearing.
-func markBudgetSkipped(items []*item) {
+// markSkipped records findings left unreviewed (cost limit hit or run cancelled)
+// so they appear in the report rather than silently disappearing.
+func markSkipped(items []*item, action string) {
 	for _, it := range items {
 		if it.terminal || it.hasVerdict {
 			continue
 		}
-		it.fr.Action = report.ActionSkippedBudget
+		it.fr.Action = action
 		it.terminal = true
 	}
 }
@@ -353,9 +390,7 @@ func (o *Orchestrator) reviewBatch(ctx context.Context, batch []*item) {
 	if err != nil {
 		o.log.Warn("batch review failed; falling back to individual review",
 			"size", len(batch), "err", err)
-		for _, it := range batch {
-			o.reviewIndividually(ctx, it)
-		}
+		o.reviewRemaining(ctx, batch)
 		return
 	}
 
@@ -365,10 +400,28 @@ func (o *Orchestrator) reviewBatch(ctx context.Context, batch []*item) {
 			it.hasVerdict = true
 		}
 	}
-	for _, it := range batch {
-		if !it.hasVerdict {
-			o.reviewIndividually(ctx, it)
+	o.reviewRemaining(ctx, batch)
+}
+
+// reviewRemaining retries each unanswered finding of a batch individually,
+// respecting cancellation and the cost limit between calls so a failed batch
+// cannot blow through the budget one finding at a time.
+func (o *Orchestrator) reviewRemaining(ctx context.Context, batch []*item) {
+	for i, it := range batch {
+		if it.terminal || it.hasVerdict {
+			continue
 		}
+		if ctx.Err() != nil {
+			markSkipped(batch[i:], report.ActionSkippedCancelled)
+			return
+		}
+		if o.overBudget() {
+			o.log.Warn("cost limit reached during individual fallback; skipping rest",
+				"remaining", len(batch)-i)
+			markSkipped(batch[i:], report.ActionSkippedBudget)
+			return
+		}
+		o.reviewIndividually(ctx, it)
 	}
 }
 
@@ -399,6 +452,15 @@ func (o *Orchestrator) reviewIndividually(ctx context.Context, it *item) {
 
 // applyVerdict decides the action for a reviewed finding and writes it back.
 func (o *Orchestrator) applyVerdict(ctx context.Context, it *item) {
+	// On cancellation, record the verdict in the report but don't post it.
+	if ctx.Err() != nil {
+		it.fr.Verdict = it.verdict.Verdict
+		it.fr.Confidence = it.verdict.Confidence
+		it.fr.Explanation = it.verdict.Explanation
+		it.fr.Action = report.ActionSkippedCancelled
+		return
+	}
+
 	v := it.verdict
 	it.fr.Verdict = v.Verdict
 	it.fr.Confidence = v.Confidence
@@ -466,6 +528,23 @@ func (o *Orchestrator) buildFinding(res checkmarx.Result) (ai.Finding, int) {
 	return f, resolved
 }
 
+// dedupeBySimilarityID keeps the first result for each similarityID (in input
+// order) and counts the extra rows folded into it.
+func dedupeBySimilarityID(results []checkmarx.Result) ([]checkmarx.Result, map[checkmarx.SimilarityID]int) {
+	var unique []checkmarx.Result
+	dupes := make(map[checkmarx.SimilarityID]int)
+	seen := make(map[checkmarx.SimilarityID]bool, len(results))
+	for _, res := range results {
+		if seen[res.SimilarityID] {
+			dupes[res.SimilarityID]++
+			continue
+		}
+		seen[res.SimilarityID] = true
+		unique = append(unique, res)
+	}
+	return unique, dupes
+}
+
 // sinkNode returns the last node of the data-flow path (the sink), or nil.
 func sinkNode(res checkmarx.Result) *checkmarx.Node {
 	if len(res.Data.Nodes) == 0 {
@@ -507,7 +586,7 @@ func formatComment(v ai.Verdict, agent, model string) string {
 // tally updates report counters from a finding outcome.
 func tally(rep *report.Report, fr report.FindingResult) {
 	switch fr.Action {
-	case report.ActionSkippedAlreadyDone, report.ActionSkippedBudget:
+	case report.ActionSkippedAlreadyDone, report.ActionSkippedBudget, report.ActionSkippedCancelled:
 		rep.Skipped++
 	case report.ActionError:
 		rep.Errors++

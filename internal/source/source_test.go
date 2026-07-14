@@ -76,6 +76,27 @@ func TestSnippetForLineOutOfRange(t *testing.T) {
 	}
 }
 
+func TestSnippetForCachesFileContents(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "a.go", "one\ntwo\nthree\n")
+	r := NewReader(root, 1)
+
+	first := r.SnippetFor("a.go", 2)
+	if !first.Resolved {
+		t.Fatalf("first read should resolve, note=%q", first.Note)
+	}
+
+	// Delete the file: a second snippet must still resolve, proving the content
+	// came from the cache and not another disk read.
+	if err := os.Remove(filepath.Join(root, "a.go")); err != nil {
+		t.Fatal(err)
+	}
+	second := r.SnippetFor("a.go", 2)
+	if !second.Resolved || second.Code != first.Code {
+		t.Errorf("expected cached snippet after file removal, got resolved=%v note=%q", second.Resolved, second.Note)
+	}
+}
+
 func TestSnippetForRejectsTraversal(t *testing.T) {
 	root := t.TempDir()
 	r := NewReader(root, 2)

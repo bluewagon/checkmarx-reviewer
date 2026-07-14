@@ -56,7 +56,7 @@ const (
 	DefaultCostLimitUSD   = 0 // 0 = no cost limit
 	DefaultContextLines   = 8
 	DefaultReportPath     = "checkmarx-ai-review.json"
-	DefaultTimeoutSeconds = 300
+	DefaultTimeoutSeconds = 600 // sized for batch 20, incl. agentic repo exploration
 	DefaultBatchSize      = 20
 	DefaultConcurrency    = 4
 )

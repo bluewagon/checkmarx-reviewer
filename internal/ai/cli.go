@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Supported agent CLIs.
@@ -29,8 +30,9 @@ type agentSpec struct {
 	// is granted read-only repo tools (it runs with the repo as its working dir).
 	args func(model string, agentic bool) []string
 	// extract pulls the assistant text and any reported token/cost usage out of
-	// stdout. Agents that report no usage return a zero Usage.
-	extract func(stdout []byte) (string, Usage)
+	// stdout, plus whether the agent itself flagged the run as an error. Agents
+	// that report no usage return a zero Usage.
+	extract func(stdout []byte) (string, Usage, bool)
 }
 
 var agentSpecs = map[string]agentSpec{
@@ -74,7 +76,7 @@ var agentSpecs = map[string]agentSpec{
 			}
 			return append(a, "-p")
 		},
-		extract: func(b []byte) (string, Usage) { return string(b), Usage{} },
+		extract: func(b []byte) (string, Usage, bool) { return string(b), Usage{}, false },
 	},
 }
 
@@ -179,7 +181,14 @@ func (r *CLIReviewer) Review(ctx context.Context, findings []Finding) (map[strin
 		return nil, Usage{}, fmt.Errorf("%s invocation failed: %w: %s", r.agent, err, truncate(string(stderr), 500))
 	}
 
-	text, usage := r.spec.extract(stdout)
+	text, usage, isErr := r.spec.extract(stdout)
+	if isErr {
+		// The agent itself reported the run failed; surface its message instead of
+		// feeding it to the verdict parser.
+		r.log.Error("agent reported error", "agent", r.agent, "ids", ids,
+			"result", strings.TrimSpace(text))
+		return nil, usage, fmt.Errorf("%s reported error: %s", r.agent, truncate(text, 500))
+	}
 	verdicts, err := extractVerdicts(text)
 	if err != nil {
 		r.log.Error("agent output not parseable", "agent", r.agent, "ids", ids,
@@ -223,9 +232,10 @@ func execRunner(ctx context.Context, bin string, args []string, stdin []byte, di
 }
 
 // extractClaudeResult unwraps Claude Code's `--output-format json` envelope to
-// the assistant's text plus the token/cost usage it reports. Falls back to the
-// raw bytes with zero usage if it isn't that envelope.
-func extractClaudeResult(stdout []byte) (string, Usage) {
+// the assistant's text plus the token/cost usage it reports, along with the
+// envelope's is_error flag. Falls back to the raw bytes with zero usage if it
+// isn't that envelope.
+func extractClaudeResult(stdout []byte) (string, Usage, bool) {
 	var env struct {
 		Result  string  `json:"result"`
 		IsError bool    `json:"is_error"`
@@ -244,9 +254,9 @@ func extractClaudeResult(stdout []byte) (string, Usage) {
 			CacheCreationInputTokens: env.Usage.CacheCreationInputTokens,
 			CacheReadInputTokens:     env.Usage.CacheReadInputTokens,
 			CostUSD:                  env.CostUSD,
-		}
+		}, env.IsError
 	}
-	return string(stdout), Usage{}
+	return string(stdout), Usage{}, false
 }
 
 // extractVerdicts parses one or more Verdicts from agent output that may contain
@@ -392,10 +402,15 @@ func findingIDs(findings []Finding) []string {
 	return ids
 }
 
+// truncate trims s to at most n bytes at a rune boundary, appending an ellipsis
+// if cut.
 func truncate(s string, n int) string {
 	s = strings.TrimSpace(s)
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n] + "…"
 }

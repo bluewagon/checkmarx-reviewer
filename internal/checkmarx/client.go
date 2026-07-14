@@ -1,6 +1,7 @@
 package checkmarx
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,9 +9,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Client is a minimal Checkmarx One REST client. It exchanges an API key
@@ -22,6 +25,10 @@ type Client struct {
 
 	http *http.Client
 	log  *slog.Logger
+
+	// retryBackoff is the initial retry delay (doubles per attempt); it defaults
+	// to retryBackoffBase and is overridable in tests.
+	retryBackoff time.Duration
 
 	mu       sync.Mutex
 	token    string
@@ -48,11 +55,12 @@ func New(opts Options) *Client {
 		logger = slog.New(slog.DiscardHandler)
 	}
 	return &Client{
-		baseURI: strings.TrimRight(opts.BaseURI, "/"),
-		tenant:  opts.Tenant,
-		apiKey:  opts.APIKey,
-		http:    hc,
-		log:     logger,
+		baseURI:      strings.TrimRight(opts.BaseURI, "/"),
+		tenant:       opts.Tenant,
+		apiKey:       opts.APIKey,
+		http:         hc,
+		log:          logger,
+		retryBackoff: retryBackoffBase,
 	}
 }
 
@@ -114,43 +122,94 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 	return c.token, nil
 }
 
+// Retry policy for transient failures (network errors, 429, and 5xx gateway-ish
+// statuses). Attempts includes the initial try; backoff doubles per retry and a
+// numeric Retry-After header, when present, overrides it.
+const (
+	retryAttempts    = 3
+	retryBackoffBase = 500 * time.Millisecond
+)
+
+// retryableStatus reports whether an HTTP status is worth retrying.
+func retryableStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests, http.StatusInternalServerError,
+		http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
 // doJSON performs an authenticated request and decodes a JSON response into out
 // (which may be nil to ignore the body). method/path are joined onto baseURI;
-// path should begin with "/api". query may be nil.
-func (c *Client) doJSON(ctx context.Context, method, path string, query url.Values, body io.Reader, contentType string, out any) error {
-	token, err := c.accessToken(ctx)
-	if err != nil {
-		return err
-	}
-
+// path should begin with "/api". query and body may be nil. Transient failures
+// (network errors, 429, 5xx) are retried with backoff.
+func (c *Client) doJSON(ctx context.Context, method, path string, query url.Values, body []byte, contentType string, out any) error {
 	u := c.baseURI + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, u, body)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/json")
-	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
-	}
+	var respBody []byte
+	backoff := c.retryBackoff
+	for attempt := 1; ; attempt++ {
+		token, err := c.accessToken(ctx)
+		if err != nil {
+			return err
+		}
 
-	c.log.Debug("checkmarx request", "method", method, "path", path)
-	start := time.Now()
-	resp, err := c.http.Do(req)
-	if err != nil {
-		c.log.Error("checkmarx request errored", "method", method, "path", path, "err", err)
-		return fmt.Errorf("%s %s: %w", method, path, err)
-	}
-	defer resp.Body.Close()
+		var rdr io.Reader
+		if len(body) > 0 {
+			rdr = bytes.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, u, rdr)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Accept", "application/json")
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
 
-	respBody, _ := io.ReadAll(resp.Body)
-	c.log.Debug("checkmarx response", "method", method, "path", path,
-		"status", resp.StatusCode, "duration", time.Since(start))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		c.log.Debug("checkmarx request", "method", method, "path", path, "attempt", attempt)
+		start := time.Now()
+		resp, err := c.http.Do(req)
+		if err != nil {
+			if attempt < retryAttempts && ctx.Err() == nil {
+				c.log.Warn("checkmarx request errored; retrying", "method", method,
+					"path", path, "attempt", attempt, "err", err)
+				if err := sleepCtx(ctx, backoff); err != nil {
+					return fmt.Errorf("%s %s: %w", method, path, err)
+				}
+				backoff *= 2
+				continue
+			}
+			c.log.Error("checkmarx request errored", "method", method, "path", path, "err", err)
+			return fmt.Errorf("%s %s: %w", method, path, err)
+		}
+
+		respBody, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		c.log.Debug("checkmarx response", "method", method, "path", path,
+			"status", resp.StatusCode, "duration", time.Since(start))
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			break
+		}
+		if retryableStatus(resp.StatusCode) && attempt < retryAttempts {
+			wait := backoff
+			if ra := retryAfter(resp); ra > 0 {
+				wait = ra
+			}
+			c.log.Warn("checkmarx request failed; retrying", "method", method, "path", path,
+				"status", resp.StatusCode, "attempt", attempt, "wait", wait)
+			if err := sleepCtx(ctx, wait); err != nil {
+				return fmt.Errorf("%s %s: %w", method, path, err)
+			}
+			backoff *= 2
+			continue
+		}
 		c.log.Warn("checkmarx request failed", "method", method, "path", path,
 			"status", resp.StatusCode, "body", truncate(string(respBody), 1000))
 		return fmt.Errorf("%s %s: status %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(respBody)))
@@ -167,11 +226,38 @@ func (c *Client) doJSON(ctx context.Context, method, path string, query url.Valu
 	return nil
 }
 
-// truncate trims s to at most n characters, appending an ellipsis if cut.
+// retryAfter parses a numeric Retry-After header into a duration (0 if absent or
+// non-numeric).
+func retryAfter(resp *http.Response) time.Duration {
+	if v := resp.Header.Get("Retry-After"); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return 0
+}
+
+// sleepCtx waits for d or until ctx is done, returning ctx's error if cancelled.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// truncate trims s to at most n bytes at a rune boundary, appending an ellipsis
+// if cut.
 func truncate(s string, n int) string {
 	s = strings.TrimSpace(s)
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n] + "…"
 }

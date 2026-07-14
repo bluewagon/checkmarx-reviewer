@@ -51,9 +51,12 @@ func TestExtractVerdictsNone(t *testing.T) {
 
 func TestExtractClaudeResultUnwrapsEnvelope(t *testing.T) {
 	env := `{"type":"result","is_error":false,"total_cost_usd":0.0123,"usage":{"input_tokens":1500,"output_tokens":200,"cache_read_input_tokens":50},"result":"[{\"id\":\"a\",\"verdict\":\"FALSE_POSITIVE\",\"confidence\":0.9,\"explanation\":\"safe\"}]"}`
-	got, usage := extractClaudeResult([]byte(env))
+	got, usage, isErr := extractClaudeResult([]byte(env))
 	if !strings.Contains(got, "FALSE_POSITIVE") {
 		t.Fatalf("did not unwrap result: %q", got)
+	}
+	if isErr {
+		t.Error("is_error=false envelope should not flag an error")
 	}
 	if usage.CostUSD != 0.0123 || usage.InputTokens != 1500 || usage.OutputTokens != 200 || usage.CacheReadInputTokens != 50 {
 		t.Errorf("usage not parsed from envelope: %+v", usage)
@@ -62,8 +65,24 @@ func TestExtractClaudeResultUnwrapsEnvelope(t *testing.T) {
 		t.Errorf("total tokens = %d, want 1750", usage.TotalTokens())
 	}
 	raw := `[{"id":"a","verdict":"TRUE_POSITIVE"}]`
-	if got, usage := extractClaudeResult([]byte(raw)); got != raw || usage != (Usage{}) {
+	if got, usage, isErr := extractClaudeResult([]byte(raw)); got != raw || usage != (Usage{}) || isErr {
 		t.Error("raw JSON should pass through unchanged with zero usage")
+	}
+}
+
+func TestClaudeIsErrorEnvelopeSurfacesAgentError(t *testing.T) {
+	cr := &captureRunner{stdout: `{"type":"result","is_error":true,"result":"Credit balance too low"}`}
+	r := newReviewerForTest(AgentClaude, cr.run)
+
+	_, _, err := r.Review(context.Background(), findings("sim-1"))
+	if err == nil {
+		t.Fatal("expected error for is_error envelope")
+	}
+	if !strings.Contains(err.Error(), "Credit balance too low") {
+		t.Errorf("error should carry the agent's message, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "no JSON verdict") {
+		t.Errorf("agent error must not be misreported as a parse failure: %v", err)
 	}
 }
 
