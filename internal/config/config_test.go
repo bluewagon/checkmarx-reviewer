@@ -22,6 +22,7 @@ func setEnv(t *testing.T) {
 	t.Setenv("CX_BITBUCKET_TOKEN", "")
 	t.Setenv("CX_AI_AGENTIC_SOURCE", "")
 	t.Setenv("CX_VERBOSE", "")
+	t.Setenv("CX_LOG_DIR", "")
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -196,6 +197,38 @@ func TestLoadVerboseFlag(t *testing.T) {
 	}
 	if !cfg.Verbose {
 		t.Error("--verbose should set Verbose true")
+	}
+}
+
+func TestLoadLogDir(t *testing.T) {
+	setEnv(t)
+	base := []string{"--scan-id", "s", "--repo-path", t.TempDir()}
+
+	cfg, err := Load(base)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LogDir != DefaultLogDir {
+		t.Errorf("default log dir = %q, want %q", cfg.LogDir, DefaultLogDir)
+	}
+
+	for _, off := range []string{"off", "OFF"} {
+		cfg, err = Load(append(base, "--log-dir", off))
+		if err != nil {
+			t.Fatalf("Load(--log-dir %s): %v", off, err)
+		}
+		if cfg.LogDir != "" {
+			t.Errorf("--log-dir %s should disable file logging, got %q", off, cfg.LogDir)
+		}
+	}
+
+	t.Setenv("CX_LOG_DIR", "custom-logs")
+	cfg, err = Load(base)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LogDir != "custom-logs" {
+		t.Errorf("CX_LOG_DIR not honored: got %q", cfg.LogDir)
 	}
 }
 

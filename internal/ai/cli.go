@@ -108,13 +108,15 @@ type CLIReviewer struct {
 	agentic bool
 	workDir string
 	log     *slog.Logger
+	dump    DumpFunc
 	run     runner
 }
 
 // NewCLIReviewer builds a reviewer for the named agent ("claude" or "copilot").
 // model may be empty to use the agent's default. binOverride, when non-empty,
-// replaces the default binary name. It verifies the binary is on PATH.
-func NewCLIReviewer(agent, model, binOverride string, timeout time.Duration, agentic bool, workDir string, logger *slog.Logger) (*CLIReviewer, error) {
+// replaces the default binary name. It verifies the binary is on PATH. dump,
+// when non-nil, captures each invocation's prompt and raw output.
+func NewCLIReviewer(agent, model, binOverride string, timeout time.Duration, agentic bool, workDir string, logger *slog.Logger, dump DumpFunc) (*CLIReviewer, error) {
 	spec, ok := agentSpecs[agent]
 	if !ok {
 		return nil, fmt.Errorf("unknown agent %q (supported: %s)", agent, strings.Join(SupportedAgents(), ", "))
@@ -135,7 +137,16 @@ func NewCLIReviewer(agent, model, binOverride string, timeout time.Duration, age
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
-	return &CLIReviewer{agent: agent, spec: spec, bin: bin, model: model, timeout: timeout, agentic: agentic, workDir: workDir, log: logger, run: execRunner}, nil
+	return &CLIReviewer{agent: agent, spec: spec, bin: bin, model: model, timeout: timeout, agentic: agentic, workDir: workDir, log: logger, dump: dump, run: execRunner}, nil
+}
+
+// dumpArtifact writes a raw artifact via the configured DumpFunc, tolerating a
+// nil dump (tests construct CLIReviewer directly without one).
+func (r *CLIReviewer) dumpArtifact(category, name string, data []byte) string {
+	if r.dump == nil {
+		return ""
+	}
+	return r.dump(category, name, data)
 }
 
 // Model returns the effective model (may be empty for an agent default).
@@ -172,7 +183,9 @@ func (r *CLIReviewer) Review(ctx context.Context, findings []Finding) (map[strin
 	}
 	ids := findingIDs(findings)
 	r.log.Debug("agent invocation", "agent", r.agent, "model", r.model,
-		"batchSize", len(findings), "workDir", dir, "args", strings.Join(args, " "))
+		"batchSize", len(findings), "ids", ids, "workDir", dir,
+		"args", strings.Join(args, " "), "promptBytes", len(prompt),
+		"promptDump", r.dumpArtifact("prompts", findings[0].ID+".txt", []byte(prompt)))
 
 	stdout, stderr, err := r.run(ctx, r.bin, args, stdin, dir)
 	if err != nil {
@@ -182,6 +195,10 @@ func (r *CLIReviewer) Review(ctx context.Context, findings []Finding) (map[strin
 			"err", err, "stderr", strings.TrimSpace(string(stderr)))
 		return nil, Usage{}, fmt.Errorf("%s invocation failed: %w: %s", r.agent, err, truncate(string(stderr), 500))
 	}
+
+	r.log.Debug("agent response", "agent", r.agent, "ids", ids,
+		"stdoutBytes", len(stdout),
+		"responseDump", r.dumpArtifact("responses", findings[0].ID+".json", stdout))
 
 	text, usage, isErr := r.spec.extract(stdout)
 	if isErr {

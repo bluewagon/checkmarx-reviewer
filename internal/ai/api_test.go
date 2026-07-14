@@ -21,7 +21,7 @@ func newAPIReviewerForTest(t *testing.T, handler http.HandlerFunc, agentic bool,
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	r, err := NewAPIReviewer("", time.Minute, agentic, workDir, nil,
+	r, err := NewAPIReviewer("", time.Minute, agentic, workDir, nil, nil,
 		option.WithBaseURL(srv.URL), option.WithAPIKey("test-key"), option.WithMaxRetries(0))
 	if err != nil {
 		t.Fatalf("NewAPIReviewer: %v", err)
@@ -226,7 +226,7 @@ func TestRepoToolHelpers(t *testing.T) {
 
 func TestNewReviewerDispatch(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "test")
-	rev, err := NewReviewer(AgentAnthropic, "", "", time.Minute, false, "", nil)
+	rev, err := NewReviewer(AgentAnthropic, "", "", time.Minute, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("NewReviewer(anthropic): %v", err)
 	}
@@ -236,7 +236,7 @@ func TestNewReviewerDispatch(t *testing.T) {
 	if rev.Model() != apiDefaultModel {
 		t.Errorf("default model = %q, want %q", rev.Model(), apiDefaultModel)
 	}
-	if _, err := NewReviewer("gemini", "", "", 0, false, "", nil); err == nil {
+	if _, err := NewReviewer("gemini", "", "", 0, false, "", nil, nil); err == nil {
 		t.Error("unknown agent should error")
 	}
 }

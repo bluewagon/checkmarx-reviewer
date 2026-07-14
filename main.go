@@ -7,7 +7,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,6 +14,7 @@ import (
 	"github.com/bluewagon/checkmarx-reviewer/internal/ai"
 	"github.com/bluewagon/checkmarx-reviewer/internal/checkmarx"
 	"github.com/bluewagon/checkmarx-reviewer/internal/config"
+	"github.com/bluewagon/checkmarx-reviewer/internal/logging"
 	"github.com/bluewagon/checkmarx-reviewer/internal/report"
 	"github.com/bluewagon/checkmarx-reviewer/internal/review"
 	"github.com/bluewagon/checkmarx-reviewer/internal/source"
@@ -34,11 +34,17 @@ func run(args []string) error {
 		return err
 	}
 
-	level := slog.LevelInfo
-	if cfg.Verbose {
-		level = slog.LevelDebug
+	logger, runLog, err := logging.NewRun(cfg.LogDir, cfg.ScanID, cfg.Verbose)
+	if err != nil {
+		return fmt.Errorf("setting up logging: %w", err)
 	}
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	defer runLog.Close()
+	if runLog != nil {
+		logger.Info("file logging enabled", "dir", runLog.Dir())
+	}
+	logger.Info("run configuration", "scanId", cfg.ScanID, "agent", cfg.Agent,
+		"model", cfg.Model, "batchSize", cfg.BatchSize, "concurrency", cfg.Concurrency,
+		"agenticSource", cfg.AgenticSource, "dryRun", cfg.DryRun)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -48,6 +54,7 @@ func run(args []string) error {
 		Tenant:  cfg.Tenant,
 		APIKey:  cfg.APIKey,
 		Logger:  logger,
+		Dump:    runLog.Dump,
 	})
 	// Resolve the repo root first (cloning a Bitbucket URL if given) so the reviewer
 	// can be pointed at it for agentic source access.
@@ -67,7 +74,7 @@ func run(args []string) error {
 		repoRoot = dir
 	}
 
-	reviewer, err := ai.NewReviewer(cfg.Agent, cfg.Model, cfg.AgentBin, cfg.AgentTimeout, cfg.AgenticSource, repoRoot, logger)
+	reviewer, err := ai.NewReviewer(cfg.Agent, cfg.Model, cfg.AgentBin, cfg.AgentTimeout, cfg.AgenticSource, repoRoot, logger, runLog.Dump)
 	if err != nil {
 		return err
 	}

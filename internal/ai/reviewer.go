@@ -93,15 +93,20 @@ type NamedReviewer interface {
 	Agent() string
 }
 
+// DumpFunc writes a raw diagnostic artifact (prompt, agent output) and returns
+// the path it was written to (see internal/logging.Run.Dump). May be nil.
+type DumpFunc func(category, name string, data []byte) string
+
 // NewReviewer builds the reviewer for the named agent: the Anthropic API
 // reviewer for "anthropic" (binOverride is ignored), or a CLI reviewer for
 // "claude"/"copilot". model may be empty to use the agent's default. When
 // agentic is true the agent may read/search the repo checked out at workDir.
-func NewReviewer(agent, model, binOverride string, timeout time.Duration, agentic bool, workDir string, logger *slog.Logger) (NamedReviewer, error) {
+// dump, when non-nil, captures each invocation's prompt and raw output.
+func NewReviewer(agent, model, binOverride string, timeout time.Duration, agentic bool, workDir string, logger *slog.Logger, dump DumpFunc) (NamedReviewer, error) {
 	if agent == AgentAnthropic {
-		return NewAPIReviewer(model, timeout, agentic, workDir, logger)
+		return NewAPIReviewer(model, timeout, agentic, workDir, logger, dump)
 	}
-	return NewCLIReviewer(agent, model, binOverride, timeout, agentic, workDir, logger)
+	return NewCLIReviewer(agent, model, binOverride, timeout, agentic, workDir, logger, dump)
 }
 
 // normalize validates and clamps a verdict produced by an agent.

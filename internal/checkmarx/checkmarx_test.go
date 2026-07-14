@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -110,6 +111,65 @@ func TestListHighToVerifyPagination(t *testing.T) {
 	}
 	if got[0].SimilarityID != 0 || got[resultsPageSize].SimilarityID != SimilarityID(resultsPageSize) {
 		t.Errorf("results not assembled in order: first=%d pageBoundary=%d", got[0].SimilarityID, got[resultsPageSize].SimilarityID)
+	}
+}
+
+func TestListHighToVerifyDumpsResponseBodies(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/token") {
+			writeJSON(w, tokenResponse{AccessToken: "t", ExpiresIn: 600})
+			return
+		}
+		writeJSON(w, sastResultsResponse{Results: makeResults(2, 0), TotalCount: 2})
+	}))
+	t.Cleanup(srv.Close)
+
+	type dumpCall struct{ category, name, body string }
+	var dumps []dumpCall
+	c := New(Options{
+		BaseURI: srv.URL, Tenant: testTenant, APIKey: "k", HTTPClient: srv.Client(),
+		Dump: func(category, name string, data []byte) string {
+			dumps = append(dumps, dumpCall{category, name, string(data)})
+			return "dumped/" + name
+		},
+	})
+
+	if _, err := c.ListHighToVerify(context.Background(), "scan-1"); err != nil {
+		t.Fatalf("ListHighToVerify: %v", err)
+	}
+	if len(dumps) != 1 {
+		t.Fatalf("expected 1 dump (one page), got %d: %+v", len(dumps), dumps)
+	}
+	d := dumps[0]
+	if d.category != "checkmarx" || d.name != "GET_api_sast-results_200.json" {
+		t.Errorf("unexpected dump target: %+v", d)
+	}
+	if !strings.Contains(d.body, `"totalCount":2`) {
+		t.Errorf("dump body is not the raw response: %s", d.body)
+	}
+}
+
+func TestLogResultAnomalies(t *testing.T) {
+	var buf strings.Builder
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	ok := Result{ID: "r-ok", SimilarityID: 1,
+		Data: ResultData{QueryName: "SQL_Injection", Nodes: []Node{{FileName: "a.go", Line: 1}}}}
+	noName := Result{ID: "r-noname", SimilarityID: 2,
+		Data: ResultData{Nodes: []Node{{FileName: "a.go", Line: 1}}}}
+	noNodes := Result{ID: "r-nonodes", SimilarityID: 3,
+		Data: ResultData{QueryName: "XSS"}}
+
+	logResultAnomalies(log, []Result{ok, noName, noNodes})
+
+	out := buf.String()
+	if strings.Contains(out, "r-ok") {
+		t.Errorf("complete result was flagged:\n%s", out)
+	}
+	for _, want := range []string{"r-noname", "r-nonodes", "sast result missing data"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in anomaly output:\n%s", want, out)
+		}
 	}
 }
 

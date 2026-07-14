@@ -6,6 +6,7 @@
 .env
 checkmarx-ai-review.json
 *.report.json
+/logs/
 
 # OS/editor
 .DS_Store

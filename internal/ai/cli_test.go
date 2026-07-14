@@ -272,7 +272,34 @@ func TestReviewEmptyBatch(t *testing.T) {
 }
 
 func TestNewCLIReviewerUnknownAgent(t *testing.T) {
-	if _, err := NewCLIReviewer("gemini", "", "", 0, false, "", nil); err == nil {
+	if _, err := NewCLIReviewer("gemini", "", "", 0, false, "", nil, nil); err == nil {
 		t.Fatal("expected error for unknown agent")
+	}
+}
+
+func TestReviewDumpsPromptAndResponse(t *testing.T) {
+	cr := &captureRunner{stdout: `{"type":"result","result":"[{\"id\":\"sim-1\",\"verdict\":\"TRUE_POSITIVE\",\"confidence\":0.8,\"explanation\":\"x\"}]"}`}
+	r := newReviewerForTest(AgentClaude, cr.run)
+
+	type dumpCall struct{ category, name, body string }
+	var dumps []dumpCall
+	r.dump = func(category, name string, data []byte) string {
+		dumps = append(dumps, dumpCall{category, name, string(data)})
+		return "dumped/" + name
+	}
+
+	if _, _, err := r.Review(context.Background(), findings("sim-1")); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if len(dumps) != 2 {
+		t.Fatalf("expected prompt + response dumps, got %d: %+v", len(dumps), dumps)
+	}
+	if dumps[0].category != "prompts" || dumps[0].name != "sim-1.txt" ||
+		!strings.Contains(dumps[0].body, "SQL_Injection") {
+		t.Errorf("prompt dump wrong: %+v", dumps[0])
+	}
+	if dumps[1].category != "responses" || dumps[1].name != "sim-1.json" ||
+		dumps[1].body != cr.stdout {
+		t.Errorf("response dump wrong: %+v", dumps[1])
 	}
 }

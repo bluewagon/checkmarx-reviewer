@@ -47,6 +47,9 @@ type Config struct {
 	// Verbose enables debug-level logging (HTTP requests, agent invocations, full
 	// error causes).
 	Verbose bool
+	// LogDir is the directory for per-run JSONL debug logs and raw API/prompt
+	// dumps. Empty disables file logging.
+	LogDir string
 }
 
 // Defaults for optional settings.
@@ -59,6 +62,7 @@ const (
 	DefaultTimeoutSeconds = 600 // sized for batch 20, incl. agentic repo exploration
 	DefaultBatchSize      = 20
 	DefaultConcurrency    = 4
+	DefaultLogDir         = "logs"
 )
 
 // Load parses flags from args (excluding the program name) and reads the
@@ -84,6 +88,7 @@ func Load(args []string) (*Config, error) {
 	fs.BoolVar(&cfg.DryRun, "dry-run", false, "Compute verdicts and intended actions without writing to Checkmarx")
 	fs.BoolVar(&cfg.AgenticSource, "agentic-source", envBoolOr("CX_AI_AGENTIC_SOURCE", false), "Let the agent read/search the repo for extra context instead of only the inlined snippets (uses more time per finding)")
 	fs.BoolVar(&cfg.Verbose, "verbose", envBoolOr("CX_VERBOSE", false), "Enable debug logging (HTTP requests, agent invocations, full error causes)")
+	fs.StringVar(&cfg.LogDir, "log-dir", envOr("CX_LOG_DIR", DefaultLogDir), "Directory for per-run JSONL debug logs and raw API/prompt dumps (\"off\" disables)")
 	fs.StringVar(&cfg.BitbucketToken, "bitbucket-token", os.Getenv("CX_BITBUCKET_TOKEN"), "Bitbucket HTTP access token for cloning a Bitbucket --repo-path URL (default: $CX_BITBUCKET_TOKEN)")
 
 	if err := fs.Parse(args); err != nil {
@@ -92,6 +97,11 @@ func Load(args []string) (*Config, error) {
 
 	cfg.Agent = strings.ToLower(strings.TrimSpace(cfg.Agent))
 	cfg.AgentTimeout = time.Duration(timeoutSeconds) * time.Second
+	// "off" is the explicit disable keyword: an empty CX_LOG_DIR reads as unset
+	// (envOr falls back to the default), so empty can't be the off switch.
+	if strings.EqualFold(strings.TrimSpace(cfg.LogDir), "off") {
+		cfg.LogDir = ""
+	}
 	cfg.APIKey = os.Getenv("CX_APIKEY")
 	cfg.BaseURI = strings.TrimRight(os.Getenv("CX_BASE_URI"), "/")
 	cfg.Tenant = os.Getenv("CX_TENANT")

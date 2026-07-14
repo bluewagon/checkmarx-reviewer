@@ -47,12 +47,14 @@ type APIReviewer struct {
 	agentic bool
 	workDir string
 	log     *slog.Logger
+	dump    DumpFunc
 }
 
 // NewAPIReviewer builds an Anthropic API reviewer. model may be empty for the
-// default. opts are extra SDK request options (used by tests to point the
+// default. dump, when non-nil, captures each invocation's prompt and raw
+// output. opts are extra SDK request options (used by tests to point the
 // client at a fake server).
-func NewAPIReviewer(model string, timeout time.Duration, agentic bool, workDir string, logger *slog.Logger, opts ...option.RequestOption) (*APIReviewer, error) {
+func NewAPIReviewer(model string, timeout time.Duration, agentic bool, workDir string, logger *slog.Logger, dump DumpFunc, opts ...option.RequestOption) (*APIReviewer, error) {
 	if model == "" {
 		model = apiDefaultModel
 	}
@@ -69,7 +71,17 @@ func NewAPIReviewer(model string, timeout time.Duration, agentic bool, workDir s
 		agentic: agentic,
 		workDir: workDir,
 		log:     logger,
+		dump:    dump,
 	}, nil
+}
+
+// dumpArtifact writes a raw artifact via the configured DumpFunc, tolerating a
+// nil dump.
+func (r *APIReviewer) dumpArtifact(category, name string, data []byte) string {
+	if r.dump == nil {
+		return ""
+	}
+	return r.dump(category, name, data)
 }
 
 // Model returns the effective model id.
@@ -92,7 +104,9 @@ func (r *APIReviewer) Review(ctx context.Context, findings []Finding) (map[strin
 
 	ids := findingIDs(findings)
 	r.log.Debug("agent invocation", "agent", AgentAnthropic, "model", r.model,
-		"batchSize", len(findings), "agentic", r.agentic, "workDir", r.workDir)
+		"batchSize", len(findings), "ids", ids, "agentic", r.agentic,
+		"workDir", r.workDir, "promptBytes", len(prompt),
+		"promptDump", r.dumpArtifact("prompts", findings[0].ID+".txt", []byte(prompt)))
 
 	var text string
 	var usage Usage
@@ -111,6 +125,10 @@ func (r *APIReviewer) Review(ctx context.Context, findings []Finding) (map[strin
 		}
 		return nil, usage, fmt.Errorf("anthropic api call failed: %w", err)
 	}
+
+	r.log.Debug("agent response", "agent", AgentAnthropic, "ids", ids,
+		"textBytes", len(text),
+		"responseDump", r.dumpArtifact("responses", findings[0].ID+".txt", []byte(text)))
 
 	verdicts, err := extractVerdicts(text)
 	if err != nil {

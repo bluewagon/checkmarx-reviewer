@@ -25,6 +25,7 @@ type Client struct {
 
 	http *http.Client
 	log  *slog.Logger
+	dump func(category, name string, data []byte) string
 
 	// retryBackoff is the initial retry delay (doubles per attempt); it defaults
 	// to retryBackoffBase and is overridable in tests.
@@ -35,13 +36,16 @@ type Client struct {
 	tokenExp time.Time
 }
 
-// Options configure a Client. HTTPClient and Logger are optional.
+// Options configure a Client. HTTPClient, Logger, and Dump are optional.
 type Options struct {
 	BaseURI    string
 	Tenant     string
 	APIKey     string
 	HTTPClient *http.Client
 	Logger     *slog.Logger
+	// Dump, when set, receives every API response body for raw-artifact capture
+	// (see internal/logging.Run.Dump) and returns the path it was written to.
+	Dump func(category, name string, data []byte) string
 }
 
 // New creates a Client. BaseURI should have no trailing slash.
@@ -54,12 +58,17 @@ func New(opts Options) *Client {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
+	dump := opts.Dump
+	if dump == nil {
+		dump = func(string, string, []byte) string { return "" }
+	}
 	return &Client{
 		baseURI:      strings.TrimRight(opts.BaseURI, "/"),
 		tenant:       opts.Tenant,
 		apiKey:       opts.APIKey,
 		http:         hc,
 		log:          logger,
+		dump:         dump,
 		retryBackoff: retryBackoffBase,
 	}
 }
@@ -192,7 +201,9 @@ func (c *Client) doJSON(ctx context.Context, method, path string, query url.Valu
 		respBody, _ = io.ReadAll(resp.Body)
 		resp.Body.Close()
 		c.log.Debug("checkmarx response", "method", method, "path", path,
-			"status", resp.StatusCode, "duration", time.Since(start))
+			"status", resp.StatusCode, "duration", time.Since(start),
+			"bodyBytes", len(respBody),
+			"dump", c.dump("checkmarx", dumpName(method, path, resp.StatusCode), respBody))
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			break
@@ -224,6 +235,13 @@ func (c *Client) doJSON(ctx context.Context, method, path string, query url.Valu
 		return fmt.Errorf("decoding %s %s response: %w", method, path, err)
 	}
 	return nil
+}
+
+// dumpName builds the artifact filename for one API response, e.g.
+// "GET_api_sast-results_200.json".
+func dumpName(method, path string, status int) string {
+	return fmt.Sprintf("%s_%s_%d.json", method,
+		strings.ReplaceAll(strings.Trim(path, "/"), "/", "_"), status)
 }
 
 // retryAfter parses a numeric Retry-After header into a duration (0 if absent or

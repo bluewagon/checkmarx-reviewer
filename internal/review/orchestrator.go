@@ -116,8 +116,9 @@ func runConcurrent(n, count int, work func(i int)) {
 }
 
 // Run executes the pipeline and returns the report. It returns an error only for
-// fatal setup failures (auth, scan lookup, results listing); per-finding failures
-// are recorded in the report and do not abort the run.
+// fatal setup failures (auth, scan lookup, results listing, or a results response
+// that is empty or missing vulnerability names); per-finding failures are
+// recorded in the report and do not abort the run.
 func (o *Orchestrator) Run(ctx context.Context) (*report.Report, error) {
 	scan, err := o.cx.GetScan(ctx, o.opts.ScanID)
 	if err != nil {
@@ -127,6 +128,21 @@ func (o *Orchestrator) Run(ctx context.Context) (*report.Report, error) {
 	results, err := o.cx.ListHighToVerify(ctx, o.opts.ScanID)
 	if err != nil {
 		return nil, fmt.Errorf("listing findings: %w", err)
+	}
+	if len(results) == 0 {
+		return nil, fmt.Errorf("no HIGH/TO_VERIFY findings returned for scan %s", o.opts.ScanID)
+	}
+	// The AI review is meaningless without the vulnerability name, so a response
+	// omitting queryName is treated as a broken API response rather than reviewed.
+	var missing []string
+	for _, r := range results {
+		if r.Data.QueryName == "" {
+			missing = append(missing, r.ID)
+		}
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("sast results missing vulnerability names (queryName): %d of %d findings (e.g. result %s)",
+			len(missing), len(results), missing[0])
 	}
 
 	// Deduplicate by similarityID: Checkmarx keys triage (history, predicates) at
@@ -258,6 +274,8 @@ func (o *Orchestrator) prepare(ctx context.Context, projectID string, res checkm
 	finding, resolved := o.buildFinding(res)
 	it.finding = finding
 	it.fr.NodesResolved = resolved
+	o.log.Debug("finding prepared", "similarityId", simID, "query", res.Data.QueryName,
+		"nodesTotal", len(res.Data.Nodes), "nodesResolved", resolved)
 	return it
 }
 
@@ -501,6 +519,10 @@ func (o *Orchestrator) buildFinding(res checkmarx.Result) (ai.Finding, int) {
 		Language:    res.Data.LanguageName,
 		Severity:    res.Severity,
 		Description: res.Description,
+	}
+	if f.QueryName == "" || len(res.Data.Nodes) == 0 {
+		o.log.Warn("finding has incomplete evidence for AI review",
+			"similarityId", f.ID, "queryName", f.QueryName, "nodes", len(res.Data.Nodes))
 	}
 	resolved := 0
 	for i, n := range res.Data.Nodes {

@@ -568,3 +568,29 @@ func TestBatchInvocationErrorFallsBackToIndividual(t *testing.T) {
 		t.Errorf("batch sizes = %v, want %v (failed batch then two singles)", rev.batchSizes, want)
 	}
 }
+
+func TestNoFindingsReturnedIsFatal(t *testing.T) {
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}}
+	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"}, 0.90, false)
+
+	_, err := o.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "no HIGH/TO_VERIFY findings") {
+		t.Fatalf("expected no-findings error, got %v", err)
+	}
+}
+
+func TestFindingMissingQueryNameIsFatal(t *testing.T) {
+	nameless := result(2)
+	nameless.ID = "res-2"
+	nameless.Data.QueryName = ""
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{result(1), nameless}}
+	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"}, 0.90, false)
+
+	_, err := o.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "missing vulnerability names") {
+		t.Fatalf("expected missing-queryName error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "1 of 2") || !strings.Contains(err.Error(), "res-2") {
+		t.Errorf("error should identify count and offending result: %v", err)
+	}
+}
