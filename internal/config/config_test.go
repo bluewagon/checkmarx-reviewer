@@ -18,6 +18,7 @@ func setEnv(t *testing.T) {
 	t.Setenv("CX_AI_AGENT_BIN", "")
 	t.Setenv("CX_AI_BATCH_SIZE", "")
 	t.Setenv("CX_AI_COST_LIMIT", "")
+	t.Setenv("CX_CONCURRENCY", "")
 	t.Setenv("CX_BITBUCKET_TOKEN", "")
 	t.Setenv("CX_AI_AGENTIC_SOURCE", "")
 	t.Setenv("CX_VERBOSE", "")
@@ -40,6 +41,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.BatchSize != DefaultBatchSize {
 		t.Errorf("batch size = %d, want %d", cfg.BatchSize, DefaultBatchSize)
+	}
+	if cfg.Concurrency != DefaultConcurrency {
+		t.Errorf("concurrency = %d, want %d", cfg.Concurrency, DefaultConcurrency)
 	}
 	if cfg.CostLimitUSD != DefaultCostLimitUSD {
 		t.Errorf("cost limit = %v, want %v (no limit)", cfg.CostLimitUSD, DefaultCostLimitUSD)
@@ -87,6 +91,25 @@ func TestLoadRejectsBadBatchSize(t *testing.T) {
 	}
 }
 
+func TestLoadConcurrencyFlag(t *testing.T) {
+	setEnv(t)
+	cfg, err := Load([]string{"--scan-id", "s", "--repo-path", t.TempDir(), "--concurrency", "8"})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Concurrency != 8 {
+		t.Errorf("concurrency = %d, want 8", cfg.Concurrency)
+	}
+}
+
+func TestLoadRejectsBadConcurrency(t *testing.T) {
+	setEnv(t)
+	_, err := Load([]string{"--scan-id", "s", "--repo-path", t.TempDir(), "--concurrency", "0"})
+	if err == nil || !strings.Contains(err.Error(), "concurrency") {
+		t.Fatalf("expected concurrency error, got %v", err)
+	}
+}
+
 func TestLoadRejectsBadThreshold(t *testing.T) {
 	setEnv(t)
 	_, err := Load([]string{"--scan-id", "s", "--repo-path", t.TempDir(), "--fp-confidence-threshold", "1.5"})
@@ -114,6 +137,32 @@ func TestLoadAcceptsBitbucketURLWithToken(t *testing.T) {
 	// The URL is kept verbatim; normalization/cloning happens at run time.
 	if cfg.RepoPath != url || cfg.BitbucketToken != "tok" {
 		t.Errorf("unexpected cfg: repoPath=%q token=%q", cfg.RepoPath, cfg.BitbucketToken)
+	}
+}
+
+func TestLoadBitbucketTokenFlag(t *testing.T) {
+	setEnv(t) // clears CX_BITBUCKET_TOKEN
+	url := "https://bitbucket.example.com/scm/PROJ/my-repo.git"
+	cfg, err := Load([]string{"--scan-id", "s", "--repo-path", url, "--bitbucket-token", "tok"})
+	if err != nil {
+		t.Fatalf("Load with --bitbucket-token: %v", err)
+	}
+	// The flag alone satisfies the URL-requires-token rule.
+	if cfg.BitbucketToken != "tok" {
+		t.Errorf("BitbucketToken = %q, want %q", cfg.BitbucketToken, "tok")
+	}
+}
+
+func TestLoadBitbucketTokenFlagOverridesEnv(t *testing.T) {
+	setEnv(t)
+	t.Setenv("CX_BITBUCKET_TOKEN", "env")
+	url := "https://bitbucket.example.com/scm/PROJ/my-repo.git"
+	cfg, err := Load([]string{"--scan-id", "s", "--repo-path", url, "--bitbucket-token", "flag"})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.BitbucketToken != "flag" {
+		t.Errorf("flag should override env: got %q, want %q", cfg.BitbucketToken, "flag")
 	}
 }
 

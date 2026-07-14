@@ -81,6 +81,7 @@ func run(args []string) error {
 		Agent:        cfg.Agent,
 		Model:        reviewer.Model(),
 		BatchSize:    cfg.BatchSize,
+		Concurrency:  cfg.Concurrency,
 		FPThreshold:  cfg.FPThreshold,
 		CostLimitUSD: cfg.CostLimitUSD,
 		DryRun:       cfg.DryRun,

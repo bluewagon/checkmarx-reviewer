@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/bluewagon/checkmarx-reviewer/internal/ai"
@@ -25,8 +26,10 @@ type fakeCx struct {
 	scan    *checkmarx.Scan
 	results []checkmarx.Result
 	history map[string][]checkmarx.Predicate
-	posts   []postCall
 	postErr error // when set, PostPredicate returns it instead of succeeding
+
+	mu    sync.Mutex // guards posts (PostPredicate may run concurrently)
+	posts []postCall
 }
 
 func (f *fakeCx) GetScan(context.Context, string) (*checkmarx.Scan, error) { return f.scan, nil }
@@ -34,13 +37,15 @@ func (f *fakeCx) ListHighToVerify(context.Context, string) ([]checkmarx.Result, 
 	return f.results, nil
 }
 func (f *fakeCx) GetPredicateHistory(_ context.Context, sim, _ string) ([]checkmarx.Predicate, error) {
-	return f.history[sim], nil
+	return f.history[sim], nil // history is read-only during a run
 }
 func (f *fakeCx) PostPredicate(_ context.Context, sim, proj, sev, state, comment string) error {
 	if f.postErr != nil {
 		return f.postErr
 	}
+	f.mu.Lock()
 	f.posts = append(f.posts, postCall{sim, proj, sev, state, comment})
+	f.mu.Unlock()
 	return nil
 }
 
@@ -49,14 +54,24 @@ func (f *fakeCx) PostPredicate(_ context.Context, sim, proj, sev, state, comment
 type fakeReviewer struct {
 	v               ai.Verdict
 	usagePerCall    ai.Usage        // usage returned by each Review call
-	batchSizes      []int           // recorded size of each Review call
 	omitAlways      map[string]bool // never answer these ids
 	omitInBatch     map[string]bool // omit only when batch size > 1 (answered on fallback)
 	errIfLargerThan int             // return an error when batch size exceeds this (0 = never)
+
+	mu           sync.Mutex // guards the recorded call metadata below
+	batchSizes   []int      // recorded size of each Review call
+	batchQueries [][]string // recorded QueryName of each finding in each call
 }
 
 func (f *fakeReviewer) Review(_ context.Context, findings []ai.Finding) (map[string]ai.Verdict, ai.Usage, error) {
+	queries := make([]string, len(findings))
+	for i, fnd := range findings {
+		queries[i] = fnd.QueryName
+	}
+	f.mu.Lock()
 	f.batchSizes = append(f.batchSizes, len(findings))
+	f.batchQueries = append(f.batchQueries, queries)
+	f.mu.Unlock()
 	if f.errIfLargerThan > 0 && len(findings) > f.errIfLargerThan {
 		return nil, f.usagePerCall, fmt.Errorf("simulated batch failure")
 	}
@@ -81,6 +96,13 @@ func result(sim int64) checkmarx.Result {
 		Severity:     checkmarx.SeverityHigh,
 		Data:         checkmarx.ResultData{QueryName: "SQL_Injection", Nodes: []checkmarx.Node{{FileName: "a.go", Line: 1}}},
 	}
+}
+
+// resultQ is like result but lets the test set the query name (for ordering tests).
+func resultQ(sim int64, query string) checkmarx.Result {
+	r := result(sim)
+	r.Data.QueryName = query
+	return r
 }
 
 func newOrch(t *testing.T, cx *fakeCx, v ai.Verdict, threshold float64, dryRun bool) *Orchestrator {
@@ -339,6 +361,79 @@ func TestPerFindingErrorIsLoggedLive(t *testing.T) {
 	}
 	if !strings.Contains(out, "boom-503") {
 		t.Errorf("log missing the underlying cause:\n%s", out)
+	}
+}
+
+func TestConcurrentReviewAccountsAllFindings(t *testing.T) {
+	const nFindings = 50
+	sims := make([]int64, nFindings)
+	for i := range sims {
+		sims[i] = int64(i + 1)
+	}
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: results(sims...)}
+	rev := &fakeReviewer{
+		v:            ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"},
+		usagePerCall: ai.Usage{InputTokens: 10, OutputTokens: 2, CostUSD: 0.01},
+	}
+	o := New(cx, rev, source.NewReader(t.TempDir(), 2), Options{
+		ScanID: "scan-1", Model: "claude-test", BatchSize: 5, Concurrency: 8, FPThreshold: 0.90,
+	}, nil)
+
+	rep := run(t, o)
+
+	// Every finding reviewed and posted exactly once, none lost or double-counted.
+	if rep.Reviewed != nFindings || rep.Errors != 0 || rep.Skipped != 0 {
+		t.Fatalf("reviewed=%d errors=%d skipped=%d, want reviewed=%d", rep.Reviewed, rep.Errors, rep.Skipped, nFindings)
+	}
+	if len(cx.posts) != nFindings {
+		t.Errorf("posts = %d, want %d", len(cx.posts), nFindings)
+	}
+	// 50 findings / batch 5 = 10 calls; usage must sum exactly under concurrency.
+	const wantCalls = nFindings / 5
+	if len(rev.batchSizes) != wantCalls {
+		t.Errorf("Review calls = %d, want %d", len(rev.batchSizes), wantCalls)
+	}
+	if rep.TotalTokens != wantCalls*12 {
+		t.Errorf("total tokens = %d, want %d", rep.TotalTokens, wantCalls*12)
+	}
+	if got, want := rep.EstimatedCostUSD, wantCalls*0.01; got < want-1e-9 || got > want+1e-9 {
+		t.Errorf("estimated cost = %v, want ~%v", got, want)
+	}
+	// Report order preserved despite concurrent completion.
+	for i := range rep.Findings {
+		if want := fmt.Sprint(i + 1); rep.Findings[i].SimilarityID != want {
+			t.Errorf("report order[%d] = %s, want %s", i, rep.Findings[i].SimilarityID, want)
+		}
+	}
+}
+
+func TestCacheOrderingGroupsBatchesByQuery(t *testing.T) {
+	// Interleaved queries; after cache-aware ordering each batch must be homogeneous.
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{
+		resultQ(1, "XSS_Reflected"),
+		resultQ(2, "SQL_Injection"),
+		resultQ(3, "XSS_Reflected"),
+		resultQ(4, "SQL_Injection"),
+		resultQ(5, "XSS_Reflected"),
+	}}
+	rev := &fakeReviewer{v: ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"}}
+	// Sequential (default concurrency) so batchQueries order is deterministic.
+	o := newOrchRev(t, cx, rev, 0.90, false, 2)
+
+	run(t, o)
+
+	// Sorted → [SQLi, SQLi, XSS, XSS, XSS]; batch size 2 → [SQLi,SQLi][XSS,XSS][XSS].
+	for _, batch := range rev.batchQueries {
+		for _, q := range batch {
+			if q != batch[0] {
+				t.Errorf("batch is not homogeneous by query: %v", batch)
+				break
+			}
+		}
+	}
+	// The two SQLi findings must land in the first batch together.
+	if len(rev.batchQueries) < 1 || len(rev.batchQueries[0]) != 2 || rev.batchQueries[0][0] != "SQL_Injection" {
+		t.Errorf("first batch should be the two SQL_Injection findings, got %v", rev.batchQueries)
 	}
 }
 

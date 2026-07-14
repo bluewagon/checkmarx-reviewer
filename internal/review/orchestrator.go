@@ -6,7 +6,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bluewagon/checkmarx-reviewer/internal/ai"
@@ -34,6 +36,7 @@ type Options struct {
 	Agent        string
 	Model        string
 	BatchSize    int
+	Concurrency  int // max findings/batches processed in parallel (<=1 = sequential)
 	FPThreshold  float64
 	CostLimitUSD float64 // stop the run once cumulative AI cost exceeds this (0 = no limit)
 	DryRun       bool
@@ -41,12 +44,14 @@ type Options struct {
 
 // Orchestrator wires the collaborators together.
 type Orchestrator struct {
-	cx    CheckmarxClient
-	rev   ai.Reviewer
-	src   *source.Reader
-	opts  Options
-	log   *slog.Logger
-	spent ai.Usage // cumulative token/cost usage across all AI calls this run
+	cx   CheckmarxClient
+	rev  ai.Reviewer
+	src  *source.Reader
+	opts Options
+	log  *slog.Logger
+
+	mu    sync.Mutex // guards spent (AI calls may run concurrently)
+	spent ai.Usage   // cumulative token/cost usage across all AI calls this run
 }
 
 // New creates an Orchestrator. logger may be nil (logging is discarded).
@@ -58,23 +63,56 @@ func New(cx CheckmarxClient, rev ai.Reviewer, src *source.Reader, opts Options, 
 }
 
 // recordUsage accumulates one AI call's usage into the run total and logs it.
+// Safe for concurrent callers.
 func (o *Orchestrator) recordUsage(u ai.Usage) {
 	if u == (ai.Usage{}) {
 		return // agent reported no usage (e.g. Copilot, or a failed call)
 	}
+	o.mu.Lock()
 	o.spent.Add(u)
+	total := o.spent
+	o.mu.Unlock()
 	o.log.Info("ai call cost",
 		"deltaUsd", fmt.Sprintf("%.4f", u.CostUSD),
 		"in", u.InputTokens, "out", u.OutputTokens,
 		"cache", u.CacheCreationInputTokens+u.CacheReadInputTokens,
-		"runTotalUsd", fmt.Sprintf("%.4f", o.spent.CostUSD),
-		"runTotalTokens", o.spent.TotalTokens())
+		"runTotalUsd", fmt.Sprintf("%.4f", total.CostUSD),
+		"runTotalTokens", total.TotalTokens())
 }
 
 // overBudget reports whether the cumulative cost has reached the configured
-// limit. A limit of 0 (or less) disables the check.
+// limit. A limit of 0 (or less) disables the check. Safe for concurrent callers.
 func (o *Orchestrator) overBudget() bool {
-	return o.opts.CostLimitUSD > 0 && o.spent.CostUSD >= o.opts.CostLimitUSD
+	if o.opts.CostLimitUSD <= 0 {
+		return false
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.spent.CostUSD >= o.opts.CostLimitUSD
+}
+
+// runConcurrent runs work(0..count-1) with at most n invocations in flight. When
+// n <= 1 it runs inline in index order, keeping behavior deterministic and
+// avoiding goroutine overhead.
+func runConcurrent(n, count int, work func(i int)) {
+	if n <= 1 {
+		for i := range count {
+			work(i)
+		}
+		return
+	}
+	sem := make(chan struct{}, n)
+	var wg sync.WaitGroup
+	for i := range count {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			work(i)
+		}(i)
+	}
+	wg.Wait()
 }
 
 // Run executes the pipeline and returns the report. It returns an error only for
@@ -97,30 +135,39 @@ func (o *Orchestrator) Run(ctx context.Context) (*report.Report, error) {
 		Agent:         o.opts.Agent,
 		Model:         o.opts.Model,
 		BatchSize:     o.opts.BatchSize,
+		Concurrency:   max(o.opts.Concurrency, 1),
 		FPThreshold:   o.opts.FPThreshold,
 		DryRun:        o.opts.DryRun,
 		GeneratedAt:   time.Now().UTC(),
 		TotalFindings: len(results),
 	}
 
+	n := max(o.opts.Concurrency, 1)
 	o.log.Info("reviewing findings", "count", len(results), "scanId", o.opts.ScanID,
-		"projectId", scan.ProjectID, "batchSize", o.opts.BatchSize)
+		"projectId", scan.ProjectID, "batchSize", o.opts.BatchSize, "concurrency", n)
 
-	// Phase 1: prepare each finding (idempotency check + source evidence).
+	// Phase 1: prepare each finding (idempotency check + source evidence). Each
+	// task writes a distinct index, so no locking is needed; the Checkmarx client
+	// is concurrency-safe.
 	items := make([]*item, len(results))
-	for i, res := range results {
-		items[i] = o.prepare(ctx, scan.ProjectID, res)
-	}
+	runConcurrent(n, len(results), func(i int) {
+		items[i] = o.prepare(ctx, scan.ProjectID, results[i])
+	})
 
 	// Phase 2: review non-terminal findings in bounded batches, with per-finding
 	// fallback for anything a batch fails to answer. Stops early on cost limit.
-	aborted := o.reviewBatches(ctx, items)
+	aborted := o.reviewBatches(ctx, items, n)
 
-	// Phase 3: act on verdicts and assemble the report (original order preserved).
-	for _, it := range items {
+	// Phase 3: post verdicts (concurrently — each touches only its own item), then
+	// assemble the report sequentially in original order so counters/order are
+	// deterministic.
+	runConcurrent(n, len(items), func(i int) {
+		it := items[i]
 		if !it.terminal && it.hasVerdict {
 			o.applyVerdict(ctx, it)
 		}
+	})
+	for _, it := range items {
 		tally(rep, it.fr)
 		rep.Findings = append(rep.Findings, it.fr)
 	}
@@ -192,10 +239,16 @@ func (o *Orchestrator) prepare(ctx context.Context, projectID string, res checkm
 	return it
 }
 
-// reviewBatches chunks the non-terminal items and reviews each batch. It stops
-// early once the cost limit is exceeded, marking any not-yet-reviewed findings as
-// budget-skipped, and reports whether it aborted for that reason.
-func (o *Orchestrator) reviewBatches(ctx context.Context, items []*item) bool {
+// reviewBatches chunks the non-terminal items and reviews each batch with up to n
+// batches in flight. Findings are stable-sorted so each chunk is homogeneous
+// (same query/file), which keeps larger batches accurate and cache-friendly. It
+// stops dispatching once the cost limit is exceeded, marking any not-yet-reviewed
+// findings as budget-skipped, and reports whether it aborted for that reason.
+//
+// When n > 1 the cost-limit boundary is approximate: batches already in flight
+// finish, so spend may overshoot the limit by up to n-1 batches. At n == 1 the
+// stop is exact.
+func (o *Orchestrator) reviewBatches(ctx context.Context, items []*item, n int) bool {
 	var pending []*item
 	for _, it := range items {
 		if !it.terminal {
@@ -206,25 +259,71 @@ func (o *Orchestrator) reviewBatches(ctx context.Context, items []*item) bool {
 		return false
 	}
 
+	// Group homogeneous findings together (same query, then sink location) so each
+	// batch is cache-friendly; stable so equal keys keep their original order.
+	sort.SliceStable(pending, func(a, b int) bool {
+		x, y := pending[a], pending[b]
+		if x.finding.QueryName != y.finding.QueryName {
+			return x.finding.QueryName < y.finding.QueryName
+		}
+		if x.fr.SinkFile != y.fr.SinkFile {
+			return x.fr.SinkFile < y.fr.SinkFile
+		}
+		return x.fr.SinkLine < y.fr.SinkLine
+	})
+
 	size := max(o.opts.BatchSize, 1)
 
-	batchNum := 0
+	// Build the list of chunks up front so we can gate dispatch on the budget.
+	type chunk struct{ start, end int }
+	var chunks []chunk
 	for start := 0; start < len(pending); start += size {
-		end := min(start+size, len(pending))
-		batchNum++
-		o.log.Info("reviewing batch", "batch", batchNum, "size", end-start)
-		o.reviewBatch(ctx, pending[start:end])
+		chunks = append(chunks, chunk{start, min(start+size, len(pending))})
+	}
 
+	sem := make(chan struct{}, max(n, 1))
+	var wg sync.WaitGroup
+	aborted := false
+	dispatched := 0
+	for i, ch := range chunks {
+		// Acquire a slot first: this blocks until fewer than n batches are in
+		// flight, so the batches ahead of us have finished and recorded their usage
+		// by the time we check the budget. At n==1 that makes the stop exact; at
+		// n>1 overshoot is bounded to the batches still running.
+		sem <- struct{}{}
 		if o.overBudget() {
+			<-sem // release the unused slot
 			o.log.Warn("cost limit reached; stopping",
-				"spentUsd", fmt.Sprintf("%.4f", o.spent.CostUSD),
+				"spentUsd", fmt.Sprintf("%.4f", o.snapshotSpent().CostUSD),
 				"limitUsd", fmt.Sprintf("%.2f", o.opts.CostLimitUSD),
-				"unreviewed", len(pending)-end)
-			markBudgetSkipped(pending[end:])
-			return true
+				"unreviewedBatches", len(chunks)-i)
+			aborted = true
+			break
 		}
+		wg.Add(1)
+		dispatched++
+		go func(batchNum, start, end int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			o.log.Info("reviewing batch", "batch", batchNum, "size", end-start)
+			o.reviewBatch(ctx, pending[start:end])
+		}(i+1, ch.start, ch.end)
+	}
+	wg.Wait()
+
+	if aborted {
+		// Mark every finding in the chunks we never dispatched as budget-skipped.
+		markBudgetSkipped(pending[chunks[dispatched].start:])
+		return true
 	}
 	return false
+}
+
+// snapshotSpent returns a copy of the current usage totals under lock.
+func (o *Orchestrator) snapshotSpent() ai.Usage {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.spent
 }
 
 // markBudgetSkipped records findings left unreviewed because the cost limit was

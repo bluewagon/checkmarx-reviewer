@@ -42,6 +42,7 @@ type Report struct {
 	Agent          string    `json:"agent"`
 	Model          string    `json:"model,omitempty"`
 	BatchSize      int       `json:"batchSize"`
+	Concurrency    int       `json:"concurrency"`
 	FPThreshold    float64   `json:"fpConfidenceThreshold"`
 	DryRun         bool      `json:"dryRun"`
 	GeneratedAt    time.Time `json:"generatedAt"`

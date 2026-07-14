@@ -35,6 +35,7 @@ type Config struct {
 	Model        string // agent model id (may be empty to use agent default)
 	AgentTimeout time.Duration
 	BatchSize    int // findings reviewed per agent invocation
+	Concurrency  int // max findings/batches processed in parallel (1 = sequential)
 	FPThreshold  float64
 	CostLimitUSD float64 // stop the run once cumulative AI cost (USD) exceeds this; 0 = no limit
 	ContextLines int
@@ -56,7 +57,8 @@ const (
 	DefaultContextLines   = 8
 	DefaultReportPath     = "checkmarx-ai-review.json"
 	DefaultTimeoutSeconds = 300
-	DefaultBatchSize      = 10
+	DefaultBatchSize      = 20
+	DefaultConcurrency    = 4
 )
 
 // Load parses flags from args (excluding the program name) and reads the
@@ -74,6 +76,7 @@ func Load(args []string) (*Config, error) {
 	fs.StringVar(&cfg.Model, "model", os.Getenv("CX_AI_MODEL"), "Model id to pass to the agent (default: the agent's default)")
 	fs.IntVar(&timeoutSeconds, "agent-timeout", DefaultTimeoutSeconds, "Per-invocation agent timeout, in seconds")
 	fs.IntVar(&cfg.BatchSize, "batch-size", envIntOr("CX_AI_BATCH_SIZE", DefaultBatchSize), "Findings reviewed per agent invocation (>=1); higher saves tokens")
+	fs.IntVar(&cfg.Concurrency, "concurrency", envIntOr("CX_CONCURRENCY", DefaultConcurrency), "Max findings/batches processed in parallel (history fetches, agent calls, predicate posts); 1 = fully sequential")
 	fs.Float64Var(&cfg.FPThreshold, "fp-confidence-threshold", DefaultFPThreshold, "Minimum confidence [0-1] to auto-set Proposed Not Exploitable")
 	fs.Float64Var(&cfg.CostLimitUSD, "cost-limit", envFloatOr("CX_AI_COST_LIMIT", DefaultCostLimitUSD), "Stop the run once cumulative AI cost (USD) exceeds this; 0 = no limit (only enforced for the Claude agent, which reports cost)")
 	fs.IntVar(&cfg.ContextLines, "context-lines", DefaultContextLines, "Source lines of context to include around each data-flow node")
@@ -81,6 +84,7 @@ func Load(args []string) (*Config, error) {
 	fs.BoolVar(&cfg.DryRun, "dry-run", false, "Compute verdicts and intended actions without writing to Checkmarx")
 	fs.BoolVar(&cfg.AgenticSource, "agentic-source", envBoolOr("CX_AI_AGENTIC_SOURCE", false), "Let the agent read/search the repo for extra context instead of only the inlined snippets (uses more time per finding)")
 	fs.BoolVar(&cfg.Verbose, "verbose", envBoolOr("CX_VERBOSE", false), "Enable debug logging (HTTP requests, agent invocations, full error causes)")
+	fs.StringVar(&cfg.BitbucketToken, "bitbucket-token", os.Getenv("CX_BITBUCKET_TOKEN"), "Bitbucket HTTP access token for cloning a Bitbucket --repo-path URL (default: $CX_BITBUCKET_TOKEN)")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -91,7 +95,6 @@ func Load(args []string) (*Config, error) {
 	cfg.APIKey = os.Getenv("CX_APIKEY")
 	cfg.BaseURI = strings.TrimRight(os.Getenv("CX_BASE_URI"), "/")
 	cfg.Tenant = os.Getenv("CX_TENANT")
-	cfg.BitbucketToken = os.Getenv("CX_BITBUCKET_TOKEN")
 
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -138,12 +141,15 @@ func (c *Config) validate() error {
 	if c.BatchSize < 1 {
 		return errors.New("--batch-size must be >= 1")
 	}
+	if c.Concurrency < 1 {
+		return errors.New("--concurrency must be >= 1")
+	}
 
 	// A Bitbucket URL is cloned at runtime, so it needn't exist locally, but it
 	// does require an access token to authenticate the clone.
 	if vcs.IsRemoteURL(c.RepoPath) {
 		if c.BitbucketToken == "" {
-			return errors.New("--repo-path is a URL but CX_BITBUCKET_TOKEN is not set")
+			return errors.New("--repo-path is a URL but no Bitbucket token was provided (set --bitbucket-token or CX_BITBUCKET_TOKEN)")
 		}
 		return nil
 	}
