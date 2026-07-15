@@ -80,14 +80,17 @@ func TestGetScanNoProjectID(t *testing.T) {
 	}
 }
 
-func TestListHighToVerifyPagination(t *testing.T) {
+func TestListToVerifyPagination(t *testing.T) {
 	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/token") {
 			writeJSON(w, tokenResponse{AccessToken: "t", ExpiresIn: 600})
 			return
 		}
 		q := r.URL.Query()
-		if q.Get("severity") != SeverityHigh || q.Get("state") != StateToVerify || q.Get("scan-id") != "scan-1" {
+		if len(q["severity"]) != 2 || q["severity"][0] != SeverityHigh || q["severity"][1] != SeverityMedium {
+			t.Errorf("severity params = %v, want [HIGH MEDIUM]", q["severity"])
+		}
+		if q.Get("state") != StateToVerify || q.Get("scan-id") != "scan-1" {
 			t.Errorf("unexpected query: %v", q)
 		}
 		offset, _ := strconv.Atoi(q.Get("offset"))
@@ -102,9 +105,9 @@ func TestListHighToVerifyPagination(t *testing.T) {
 		writeJSON(w, page)
 	})
 
-	got, err := c.ListHighToVerify(context.Background(), "scan-1")
+	got, err := c.ListToVerify(context.Background(), "scan-1", []string{SeverityHigh, SeverityMedium})
 	if err != nil {
-		t.Fatalf("ListHighToVerify: %v", err)
+		t.Fatalf("ListToVerify: %v", err)
 	}
 	if len(got) != resultsPageSize+5 {
 		t.Fatalf("expected %d results, got %d", resultsPageSize+5, len(got))
@@ -114,7 +117,7 @@ func TestListHighToVerifyPagination(t *testing.T) {
 	}
 }
 
-func TestListHighToVerifyDumpsResponseBodies(t *testing.T) {
+func TestListToVerifyDumpsResponseBodies(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/token") {
 			writeJSON(w, tokenResponse{AccessToken: "t", ExpiresIn: 600})
@@ -134,8 +137,8 @@ func TestListHighToVerifyDumpsResponseBodies(t *testing.T) {
 		},
 	})
 
-	if _, err := c.ListHighToVerify(context.Background(), "scan-1"); err != nil {
-		t.Fatalf("ListHighToVerify: %v", err)
+	if _, err := c.ListToVerify(context.Background(), "scan-1", []string{SeverityHigh}); err != nil {
+		t.Fatalf("ListToVerify: %v", err)
 	}
 	if len(dumps) != 1 {
 		t.Fatalf("expected 1 dump (one page), got %d: %+v", len(dumps), dumps)

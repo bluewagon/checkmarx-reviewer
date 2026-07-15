@@ -25,7 +25,7 @@ const commentMarker = "[AI-REVIEW]"
 // Defined as an interface so the pipeline can be unit-tested with a fake.
 type CheckmarxClient interface {
 	GetScan(ctx context.Context, scanID string) (*checkmarx.Scan, error)
-	ListHighToVerify(ctx context.Context, scanID string) ([]checkmarx.Result, error)
+	ListToVerify(ctx context.Context, scanID string, severities []string) ([]checkmarx.Result, error)
 	GetPredicateHistory(ctx context.Context, similarityID, projectID string) ([]checkmarx.Predicate, error)
 	PostPredicate(ctx context.Context, similarityID, projectID, severity, state, comment string) error
 }
@@ -33,6 +33,7 @@ type CheckmarxClient interface {
 // Options configure a run.
 type Options struct {
 	ScanID       string
+	Severities   []string // severities of TO_VERIFY findings to triage
 	Agent        string
 	Model        string
 	BatchSize    int
@@ -125,12 +126,13 @@ func (o *Orchestrator) Run(ctx context.Context) (*report.Report, error) {
 		return nil, fmt.Errorf("fetching scan: %w", err)
 	}
 
-	results, err := o.cx.ListHighToVerify(ctx, o.opts.ScanID)
+	results, err := o.cx.ListToVerify(ctx, o.opts.ScanID, o.opts.Severities)
 	if err != nil {
 		return nil, fmt.Errorf("listing findings: %w", err)
 	}
 	if len(results) == 0 {
-		return nil, fmt.Errorf("no HIGH/TO_VERIFY findings returned for scan %s", o.opts.ScanID)
+		return nil, fmt.Errorf("no %s/TO_VERIFY findings returned for scan %s",
+			strings.Join(o.opts.Severities, "|"), o.opts.ScanID)
 	}
 	// The AI review is meaningless without the vulnerability name, so a response
 	// omitting queryName is treated as a broken API response rather than reviewed.
@@ -154,6 +156,7 @@ func (o *Orchestrator) Run(ctx context.Context) (*report.Report, error) {
 	rep := &report.Report{
 		ScanID:         o.opts.ScanID,
 		ProjectID:      scan.ProjectID,
+		Severities:     o.opts.Severities,
 		Agent:          o.opts.Agent,
 		Model:          o.opts.Model,
 		BatchSize:      o.opts.BatchSize,

@@ -11,16 +11,19 @@ import (
 // resultsPageSize is the per-request page size for listing SAST results.
 const resultsPageSize = 100
 
-// ListHighToVerify returns all HIGH severity, TO_VERIFY state SAST results for a
-// scan, following pagination until the full set is retrieved.
-func (c *Client) ListHighToVerify(ctx context.Context, scanID string) ([]Result, error) {
+// ListToVerify returns all TO_VERIFY state SAST results for a scan at the given
+// severities (OR-combined by the API), following pagination until the full set
+// is retrieved.
+func (c *Client) ListToVerify(ctx context.Context, scanID string, severities []string) ([]Result, error) {
 	var all []Result
 	offset := 0
 
 	for {
 		q := url.Values{}
 		q.Set("scan-id", scanID)
-		q.Set("severity", SeverityHigh)
+		for _, s := range severities {
+			q.Add("severity", s)
+		}
 		q.Set("state", StateToVerify)
 		q.Set("limit", strconv.Itoa(resultsPageSize))
 		q.Set("offset", strconv.Itoa(offset))

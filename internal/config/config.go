@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bluewagon/checkmarx-reviewer/internal/ai"
+	"github.com/bluewagon/checkmarx-reviewer/internal/checkmarx"
 	"github.com/bluewagon/checkmarx-reviewer/internal/vcs"
 	"github.com/joho/godotenv"
 )
@@ -29,6 +30,7 @@ type Config struct {
 
 	// Run parameters (from flags).
 	ScanID       string
+	Severities   []string // severities of TO_VERIFY findings to triage (normalized to uppercase)
 	RepoPath     string
 	Agent        string // "claude" or "copilot"
 	AgentBin     string // optional override of the agent binary name/path
@@ -55,6 +57,7 @@ type Config struct {
 // Defaults for optional settings.
 const (
 	DefaultAgent          = ai.AgentClaude
+	DefaultSeverity       = checkmarx.SeverityHigh
 	DefaultFPThreshold    = 0.90
 	DefaultCostLimitUSD   = 0 // 0 = no cost limit
 	DefaultContextLines   = 8
@@ -72,8 +75,11 @@ func Load(args []string) (*Config, error) {
 	fs := flag.NewFlagSet("checkmarx-reviewer", flag.ContinueOnError)
 
 	var timeoutSeconds int
+	var severities string
 	cfg := &Config{}
 	fs.StringVar(&cfg.ScanID, "scan-id", "", "Checkmarx scan ID to review (required)")
+	fs.StringVar(&severities, "severity", envOr("CX_SEVERITY", DefaultSeverity),
+		"Comma-separated severities of To-Verify findings to triage: "+strings.Join(checkmarx.Severities(), " | "))
 	fs.StringVar(&cfg.RepoPath, "repo-path", "", "Local checkout matching the scanned commit, or a Bitbucket clone/browse URL to shallow-clone (required)")
 	fs.StringVar(&cfg.Agent, "agent", envOr("CX_AI_AGENT", DefaultAgent), "AI agent CLI to use: "+strings.Join(ai.SupportedAgents(), " | "))
 	fs.StringVar(&cfg.AgentBin, "agent-bin", os.Getenv("CX_AI_AGENT_BIN"), "Override the agent binary name/path (default: the agent's own command; ignored for the anthropic API agent)")
@@ -96,6 +102,11 @@ func Load(args []string) (*Config, error) {
 	}
 
 	cfg.Agent = strings.ToLower(strings.TrimSpace(cfg.Agent))
+	sevs, err := parseSeverities(severities)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Severities = sevs
 	cfg.AgentTimeout = time.Duration(timeoutSeconds) * time.Second
 	// "off" is the explicit disable keyword: an empty CX_LOG_DIR reads as unset
 	// (envOr falls back to the default), so empty can't be the off switch.
@@ -172,6 +183,28 @@ func (c *Config) validate() error {
 		return fmt.Errorf("--repo-path %q is not a directory", c.RepoPath)
 	}
 	return nil
+}
+
+// parseSeverities normalizes a comma-separated severity list to the uppercase
+// values the API uses, rejecting unknown values and deduplicating repeats.
+func parseSeverities(s string) ([]string, error) {
+	var out []string
+	for part := range strings.SplitSeq(s, ",") {
+		sev := strings.ToUpper(strings.TrimSpace(part))
+		if sev == "" {
+			continue
+		}
+		if !slices.Contains(checkmarx.Severities(), sev) {
+			return nil, fmt.Errorf("--severity %q is not valid (choose from: %s)", part, strings.Join(checkmarx.Severities(), ", "))
+		}
+		if !slices.Contains(out, sev) {
+			out = append(out, sev)
+		}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("--severity must name at least one severity")
+	}
+	return out, nil
 }
 
 func envOr(key, fallback string) string {

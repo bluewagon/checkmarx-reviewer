@@ -1,7 +1,7 @@
-// Command checkmarx-reviewer reviews HIGH/To-Verify SAST findings from a single
-// Checkmarx One scan with an AI model, posting a true/false-positive verdict as a
-// comment on each finding and proposing "Not Exploitable" for high-confidence
-// false positives.
+// Command checkmarx-reviewer reviews To-Verify SAST findings from a single
+// Checkmarx One scan (HIGH severity by default; see --severity) with an AI
+// model, posting a true/false-positive verdict as a comment on each finding and
+// proposing "Not Exploitable" for high-confidence false positives.
 package main
 
 import (
@@ -42,7 +42,7 @@ func run(args []string) error {
 	if runLog != nil {
 		logger.Info("file logging enabled", "dir", runLog.Dir())
 	}
-	logger.Info("run configuration", "scanId", cfg.ScanID, "agent", cfg.Agent,
+	logger.Info("run configuration", "scanId", cfg.ScanID, "severities", cfg.Severities, "agent", cfg.Agent,
 		"model", cfg.Model, "batchSize", cfg.BatchSize, "concurrency", cfg.Concurrency,
 		"agenticSource", cfg.AgenticSource, "dryRun", cfg.DryRun)
 
@@ -85,6 +85,7 @@ func run(args []string) error {
 
 	orch := review.New(cx, reviewer, reader, review.Options{
 		ScanID:       cfg.ScanID,
+		Severities:   cfg.Severities,
 		Agent:        cfg.Agent,
 		Model:        reviewer.Model(),
 		BatchSize:    cfg.BatchSize,

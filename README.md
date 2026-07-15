@@ -2,8 +2,10 @@
 
 An AI triage assistant for **Checkmarx One** SAST findings.
 
-For a single scan, it reviews every **HIGH** severity finding in the **To Verify**
-state, reads the actual source code along each finding's source→sink data-flow path
+For a single scan, it reviews every finding in the **To Verify** state at the
+selected severities (**HIGH** by default; `--severity` accepts any of
+CRITICAL/HIGH/MEDIUM/LOW/INFO), reads the actual source code along each
+finding's source→sink data-flow path
 from a local checkout, and asks an **AI agent** — **Claude Code** (`claude`),
 **GitHub Copilot CLI** (`copilot`), or the **Anthropic API directly** (`anthropic`,
 no CLI required) — whether the finding is a **true positive** or **false positive**,
@@ -19,7 +21,7 @@ leaving a human only to confirm rather than investigate from scratch.
 
 ```
 scan-id ──▶ GET /api/scans/{id}            → projectId
-        ──▶ GET /api/sast-results          → HIGH + TO_VERIFY findings (paginated)
+        ──▶ GET /api/sast-results          → TO_VERIFY findings at --severity (paginated)
    per finding: GET /api/sast-results-predicates/{similarityId} → skip if already reviewed
                 read source snippets along the data-flow nodes (local checkout)
    per BATCH of findings (default 20), up to --concurrency batches in parallel:
@@ -67,6 +69,7 @@ Checkmarx connection settings come from the environment (see [.env.example](.env
 | `CX_BASE_URI` | yes | Region API base URL, e.g. `https://us.ast.checkmarx.net` |
 | `CX_TENANT` | yes | Checkmarx One tenant name |
 | `CX_BITBUCKET_TOKEN` | only for a Bitbucket `--repo-path` URL | HTTP access token used to shallow-clone the repo |
+| `CX_SEVERITY` | no | Default `--severity` (comma-separated) |
 | `CX_AI_AGENT` | no | Default agent (`claude` \| `copilot` \| `anthropic`); overridden by `--agent` |
 | `ANTHROPIC_API_KEY` | only for the `anthropic` agent | Anthropic API key (other standard SDK credential sources also work) |
 | `CX_AI_MODEL` | no | Default model id; overridden by `--model` |
@@ -110,6 +113,7 @@ go build -o checkmarx-reviewer .
 |------|---------|-------------|
 | `--scan-id` | (required) | Scan to review |
 | `--repo-path` | (required) | Local checkout matching the scanned commit, or a Bitbucket clone/browse URL to shallow-clone |
+| `--severity` | `HIGH` | Comma-separated severities of To-Verify findings to triage: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `INFO` (case-insensitive), e.g. `--severity critical,high` |
 | `--agent` | `claude` | AI agent: `claude`, `copilot`, or `anthropic` (direct API call, no CLI) |
 | `--model` | (agent default) | Model id passed to the agent (`claude`/`anthropic` default to `claude-opus-4-8`; `copilot` uses its configured default) |
 | `--agent-bin` | (agent's command) | Override the agent binary name/path (ignored for `anthropic`) |

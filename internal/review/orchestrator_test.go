@@ -33,7 +33,7 @@ type fakeCx struct {
 }
 
 func (f *fakeCx) GetScan(context.Context, string) (*checkmarx.Scan, error) { return f.scan, nil }
-func (f *fakeCx) ListHighToVerify(context.Context, string) ([]checkmarx.Result, error) {
+func (f *fakeCx) ListToVerify(context.Context, string, []string) ([]checkmarx.Result, error) {
 	return f.results, nil
 }
 func (f *fakeCx) GetPredicateHistory(_ context.Context, sim, _ string) ([]checkmarx.Predicate, error) {
@@ -114,7 +114,8 @@ func newOrch(t *testing.T, cx *fakeCx, v ai.Verdict, threshold float64, dryRun b
 func newOrchRev(t *testing.T, cx *fakeCx, rev ai.Reviewer, threshold float64, dryRun bool, batchSize int) *Orchestrator {
 	t.Helper()
 	return New(cx, rev, source.NewReader(t.TempDir(), 2), Options{
-		ScanID: "scan-1", Model: "claude-test", BatchSize: batchSize, FPThreshold: threshold, DryRun: dryRun,
+		ScanID: "scan-1", Severities: []string{checkmarx.SeverityHigh}, Model: "claude-test",
+		BatchSize: batchSize, FPThreshold: threshold, DryRun: dryRun,
 	}, nil)
 }
 

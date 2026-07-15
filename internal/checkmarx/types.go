@@ -62,6 +62,12 @@ const (
 	SeverityInfo     = "INFO"
 )
 
+// Severities lists all severity values accepted by the SAST results API, in
+// descending order of severity.
+func Severities() []string {
+	return []string{SeverityCritical, SeverityHigh, SeverityMedium, SeverityLow, SeverityInfo}
+}
+
 // Scan is the subset of GET /api/scans/{id} we need.
 type Scan struct {
 	ID        string `json:"id"`

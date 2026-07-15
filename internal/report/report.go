@@ -41,6 +41,7 @@ type FindingResult struct {
 type Report struct {
 	ScanID         string    `json:"scanId"`
 	ProjectID      string    `json:"projectId"`
+	Severities     []string  `json:"severities"` // severities of TO_VERIFY findings triaged this run
 	Agent          string    `json:"agent"`
 	Model          string    `json:"model,omitempty"`
 	BatchSize      int       `json:"batchSize"`

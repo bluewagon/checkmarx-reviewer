@@ -1,10 +1,12 @@
 package config
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/bluewagon/checkmarx-reviewer/internal/ai"
+	"github.com/bluewagon/checkmarx-reviewer/internal/checkmarx"
 )
 
 func setEnv(t *testing.T) {
@@ -23,6 +25,7 @@ func setEnv(t *testing.T) {
 	t.Setenv("CX_AI_AGENTIC_SOURCE", "")
 	t.Setenv("CX_VERBOSE", "")
 	t.Setenv("CX_LOG_DIR", "")
+	t.Setenv("CX_SEVERITY", "")
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -57,6 +60,50 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.BaseURI != "https://us.ast.checkmarx.net" {
 		t.Errorf("trailing slash not trimmed: %q", cfg.BaseURI)
+	}
+	if len(cfg.Severities) != 1 || cfg.Severities[0] != checkmarx.SeverityHigh {
+		t.Errorf("severities = %v, want [HIGH]", cfg.Severities)
+	}
+}
+
+func TestLoadSeverityFlag(t *testing.T) {
+	setEnv(t)
+	cfg, err := Load([]string{"--scan-id", "s", "--repo-path", t.TempDir(),
+		"--severity", "critical, HIGH,high,Medium"})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{checkmarx.SeverityCritical, checkmarx.SeverityHigh, checkmarx.SeverityMedium}
+	if !slices.Equal(cfg.Severities, want) {
+		t.Errorf("severities = %v, want %v (normalized, deduped, in input order)", cfg.Severities, want)
+	}
+}
+
+func TestLoadSeverityEnvDefault(t *testing.T) {
+	setEnv(t)
+	t.Setenv("CX_SEVERITY", "low")
+	cfg, err := Load([]string{"--scan-id", "s", "--repo-path", t.TempDir()})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !slices.Equal(cfg.Severities, []string{checkmarx.SeverityLow}) {
+		t.Errorf("severities = %v, want [LOW] from CX_SEVERITY", cfg.Severities)
+	}
+}
+
+func TestLoadRejectsUnknownSeverity(t *testing.T) {
+	setEnv(t)
+	_, err := Load([]string{"--scan-id", "s", "--repo-path", t.TempDir(), "--severity", "extreme"})
+	if err == nil || !strings.Contains(err.Error(), "severity") {
+		t.Fatalf("expected severity error, got %v", err)
+	}
+}
+
+func TestLoadRejectsEmptySeverity(t *testing.T) {
+	setEnv(t)
+	_, err := Load([]string{"--scan-id", "s", "--repo-path", t.TempDir(), "--severity", " , "})
+	if err == nil || !strings.Contains(err.Error(), "severity") {
+		t.Fatalf("expected severity error, got %v", err)
 	}
 }
 
