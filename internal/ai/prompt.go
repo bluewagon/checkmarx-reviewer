@@ -88,20 +88,12 @@ func writeFinding(b *strings.Builder, f Finding) {
 	if f.Severity != "" {
 		fmt.Fprintf(b, "Severity: %s\n", f.Severity)
 	}
-	if d := strings.TrimSpace(f.Description); d != "" {
-		fmt.Fprintf(b, "Checkmarx description: %s\n", d)
-	}
-
 	b.WriteString("\nData-flow path (source → sink):\n")
 	shown := map[string][]rng{} // per-file ranges already printed in this finding
 	for _, n := range f.Nodes {
 		fmt.Fprintf(b, "\n[%d] %s:%d", n.Order, n.FileName, n.Line)
 		if n.Name != "" {
-			fmt.Fprintf(b, "  (element: %s", n.Name)
-			if n.Method != "" {
-				fmt.Fprintf(b, " in %s", n.Method)
-			}
-			b.WriteString(")")
+			fmt.Fprintf(b, "  (element: %s)", n.Name)
 		}
 		b.WriteString("\n")
 

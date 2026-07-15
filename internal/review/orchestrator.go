@@ -136,7 +136,7 @@ func (o *Orchestrator) Run(ctx context.Context) (*report.Report, error) {
 	// omitting queryName is treated as a broken API response rather than reviewed.
 	var missing []string
 	for _, r := range results {
-		if r.Data.QueryName == "" {
+		if r.QueryName == "" {
 			missing = append(missing, r.ID)
 		}
 	}
@@ -240,9 +240,9 @@ func (o *Orchestrator) prepare(ctx context.Context, projectID string, res checkm
 	it.fr = report.FindingResult{
 		SimilarityID: simID,
 		ResultHash:   res.ResultHash,
-		QueryName:    res.Data.QueryName,
+		QueryName:    res.QueryName,
 		Severity:     res.Severity,
-		NodesTotal:   len(res.Data.Nodes),
+		NodesTotal:   len(res.Nodes),
 	}
 	if sink := sinkNode(res); sink != nil {
 		it.fr.SinkFile = sink.FileName
@@ -259,7 +259,7 @@ func (o *Orchestrator) prepare(ctx context.Context, projectID string, res checkm
 	history, err := o.cx.GetPredicateHistory(ctx, simID, projectID)
 	if err != nil {
 		o.log.Error("predicate history fetch failed", "similarityId", simID,
-			"query", res.Data.QueryName, "err", err)
+			"query", res.QueryName, "err", err)
 		it.fr.Action = report.ActionError
 		it.fr.Error = fmt.Sprintf("fetching predicate history: %v", err)
 		it.terminal = true
@@ -274,8 +274,8 @@ func (o *Orchestrator) prepare(ctx context.Context, projectID string, res checkm
 	finding, resolved := o.buildFinding(res)
 	it.finding = finding
 	it.fr.NodesResolved = resolved
-	o.log.Debug("finding prepared", "similarityId", simID, "query", res.Data.QueryName,
-		"nodesTotal", len(res.Data.Nodes), "nodesResolved", resolved)
+	o.log.Debug("finding prepared", "similarityId", simID, "query", res.QueryName,
+		"nodesTotal", len(res.Nodes), "nodesResolved", resolved)
 	return it
 }
 
@@ -513,26 +513,24 @@ func (o *Orchestrator) applyVerdict(ctx context.Context, it *item) {
 // returning the number of nodes whose source resolved.
 func (o *Orchestrator) buildFinding(res checkmarx.Result) (ai.Finding, int) {
 	f := ai.Finding{
-		ID:          res.SimilarityID.String(),
-		QueryName:   res.Data.QueryName,
-		Group:       res.Data.Group,
-		Language:    res.Data.LanguageName,
-		Severity:    res.Severity,
-		Description: res.Description,
+		ID:        res.SimilarityID.String(),
+		QueryName: res.QueryName,
+		Group:     res.Group,
+		Language:  res.LanguageName,
+		Severity:  res.Severity,
 	}
-	if f.QueryName == "" || len(res.Data.Nodes) == 0 {
+	if f.QueryName == "" || len(res.Nodes) == 0 {
 		o.log.Warn("finding has incomplete evidence for AI review",
-			"similarityId", f.ID, "queryName", f.QueryName, "nodes", len(res.Data.Nodes))
+			"similarityId", f.ID, "queryName", f.QueryName, "nodes", len(res.Nodes))
 	}
 	resolved := 0
-	for i, n := range res.Data.Nodes {
+	for i, n := range res.Nodes {
 		snip := o.src.SnippetFor(n.FileName, n.Line)
 		nc := ai.NodeContext{
 			Order:    i + 1,
 			FileName: n.FileName,
 			Line:     n.Line,
 			Name:     n.Name,
-			Method:   n.Method,
 			Resolved: snip.Resolved,
 		}
 		if snip.Resolved {
@@ -569,10 +567,10 @@ func dedupeBySimilarityID(results []checkmarx.Result) ([]checkmarx.Result, map[c
 
 // sinkNode returns the last node of the data-flow path (the sink), or nil.
 func sinkNode(res checkmarx.Result) *checkmarx.Node {
-	if len(res.Data.Nodes) == 0 {
+	if len(res.Nodes) == 0 {
 		return nil
 	}
-	return &res.Data.Nodes[len(res.Data.Nodes)-1]
+	return &res.Nodes[len(res.Nodes)-1]
 }
 
 // alreadyReviewed reports whether any predicate comment came from this tool.

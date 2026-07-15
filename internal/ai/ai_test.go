@@ -45,7 +45,7 @@ func TestBuildBatchPromptIncludesEvidenceAndIDs(t *testing.T) {
 		Language:  "Go",
 		Severity:  "HIGH",
 		Nodes: []NodeContext{
-			{Order: 1, FileName: "a.go", Line: 10, Name: "req", Method: "Handler", Snippet: "   10| x := req", Resolved: true, StartLine: 8, EndLine: 12},
+			{Order: 1, FileName: "a.go", Line: 10, Name: "req", Snippet: "   10| x := req", Resolved: true, StartLine: 8, EndLine: 12},
 			{Order: 2, FileName: "b.go", Line: 20, Name: "query", Snippet: "file not found", Resolved: false},
 		},
 	}

@@ -154,11 +154,11 @@ func TestLogResultAnomalies(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(&buf, nil))
 
 	ok := Result{ID: "r-ok", SimilarityID: 1,
-		Data: ResultData{QueryName: "SQL_Injection", Nodes: []Node{{FileName: "a.go", Line: 1}}}}
+		QueryName: "SQL_Injection", Nodes: []Node{{FileName: "a.go", Line: 1}}}
 	noName := Result{ID: "r-noname", SimilarityID: 2,
-		Data: ResultData{Nodes: []Node{{FileName: "a.go", Line: 1}}}}
+		Nodes: []Node{{FileName: "a.go", Line: 1}}}
 	noNodes := Result{ID: "r-nonodes", SimilarityID: 3,
-		Data: ResultData{QueryName: "XSS"}}
+		QueryName: "XSS"}
 
 	logResultAnomalies(log, []Result{ok, noName, noNodes})
 

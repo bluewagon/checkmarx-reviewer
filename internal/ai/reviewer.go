@@ -22,7 +22,6 @@ type NodeContext struct {
 	FileName  string
 	Line      int
 	Name      string // the symbol/expression Checkmarx flagged
-	Method    string
 	Snippet   string // numbered source lines, or a note if unresolved
 	StartLine int    // first source line in Snippet (for dedup)
 	EndLine   int    // last source line in Snippet (for dedup)
@@ -31,13 +30,12 @@ type NodeContext struct {
 
 // Finding is the evidence handed to the reviewer for a single result.
 type Finding struct {
-	ID          string // stable identifier (the result's similarityID)
-	QueryName   string
-	Group       string
-	Language    string
-	Severity    string
-	Description string
-	Nodes       []NodeContext
+	ID        string // stable identifier (the result's similarityID)
+	QueryName string
+	Group     string
+	Language  string
+	Severity  string
+	Nodes     []NodeContext
 }
 
 // Verdict is the model's judgment on a finding. ID ties a verdict back to its

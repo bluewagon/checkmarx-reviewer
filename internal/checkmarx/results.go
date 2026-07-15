@@ -50,12 +50,12 @@ func (c *Client) ListHighToVerify(ctx context.Context, scanID string) ([]Result,
 // them is visible per result rather than surfacing later as a confused verdict.
 func logResultAnomalies(log *slog.Logger, results []Result) {
 	for _, r := range results {
-		if r.Data.QueryName == "" || len(r.Data.Nodes) == 0 {
+		if r.QueryName == "" || len(r.Nodes) == 0 {
 			log.Warn("sast result missing data",
 				"resultId", r.ID,
 				"similarityId", r.SimilarityID.String(),
-				"queryName", r.Data.QueryName,
-				"nodes", len(r.Data.Nodes),
+				"queryName", r.QueryName,
+				"nodes", len(r.Nodes),
 				"status", r.Status,
 				"state", r.State)
 		}

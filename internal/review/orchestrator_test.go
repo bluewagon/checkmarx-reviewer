@@ -94,14 +94,15 @@ func result(sim int64) checkmarx.Result {
 	return checkmarx.Result{
 		SimilarityID: checkmarx.SimilarityID(sim),
 		Severity:     checkmarx.SeverityHigh,
-		Data:         checkmarx.ResultData{QueryName: "SQL_Injection", Nodes: []checkmarx.Node{{FileName: "a.go", Line: 1}}},
+		QueryName:    "SQL_Injection",
+		Nodes:        []checkmarx.Node{{FileName: "a.go", Line: 1}},
 	}
 }
 
 // resultQ is like result but lets the test set the query name (for ordering tests).
 func resultQ(sim int64, query string) checkmarx.Result {
 	r := result(sim)
-	r.Data.QueryName = query
+	r.QueryName = query
 	return r
 }
 
@@ -582,7 +583,7 @@ func TestNoFindingsReturnedIsFatal(t *testing.T) {
 func TestFindingMissingQueryNameIsFatal(t *testing.T) {
 	nameless := result(2)
 	nameless.ID = "res-2"
-	nameless.Data.QueryName = ""
+	nameless.QueryName = ""
 	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{result(1), nameless}}
 	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"}, 0.90, false)
 

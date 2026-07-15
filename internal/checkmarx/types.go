@@ -55,9 +55,11 @@ const (
 
 // Severity values.
 const (
-	SeverityHigh   = "HIGH"
-	SeverityMedium = "MEDIUM"
-	SeverityLow    = "LOW"
+	SeverityCritical = "CRITICAL"
+	SeverityHigh     = "HIGH"
+	SeverityMedium   = "MEDIUM"
+	SeverityLow      = "LOW"
+	SeverityInfo     = "INFO"
 )
 
 // Scan is the subset of GET /api/scans/{id} we need.
@@ -70,29 +72,22 @@ type Scan struct {
 
 // Node is a single element of a SAST result's source→sink data-flow path.
 type Node struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	FileName string `json:"fileName"`
-	FullName string `json:"fullName"`
-	Line     int    `json:"line"`
-	Column   int    `json:"column"`
-	Method   string `json:"method"`
-	Length   int    `json:"length"`
+	NodeID     int    `json:"nodeID"`
+	Name       string `json:"name"`
+	FileName   string `json:"fileName"`
+	FullName   string `json:"fullName"`
+	Line       int    `json:"line"`
+	Column     int    `json:"column"`
+	MethodLine int    `json:"methodLine"`
+	Length     int    `json:"length"`
 }
 
-// ResultData carries the query metadata and data-flow nodes for a result.
-type ResultData struct {
-	QueryID      any    `json:"queryId"`
-	QueryName    string `json:"queryName"`
-	Group        string `json:"group"`
-	LanguageName string `json:"languageName"`
-	ResultHash   string `json:"resultHash"`
-	Nodes        []Node `json:"nodes"`
-}
-
-// Result is a single SAST finding from GET /api/sast-results.
+// Result is a single SAST finding from GET /api/sast-results. All fields are
+// top-level on the result — unlike the multi-scanner GET /api/results endpoint,
+// nothing is nested under a "data" object. The response's queryID (integer) is
+// deliberately omitted: it can exceed int64, so use queryIDStr if it is ever
+// needed.
 type Result struct {
-	Type            string       `json:"type"`
 	ID              string       `json:"id"`
 	SimilarityID    SimilarityID `json:"similarityID"`
 	ResultHash      string       `json:"resultHash"`
@@ -100,8 +95,10 @@ type Result struct {
 	State           string       `json:"state"`
 	Severity        string       `json:"severity"`
 	ConfidenceLevel int          `json:"confidenceLevel"`
-	Description     string       `json:"description"`
-	Data            ResultData   `json:"data"`
+	QueryName       string       `json:"queryName"`
+	Group           string       `json:"group"`
+	LanguageName    string       `json:"languageName"`
+	Nodes           []Node       `json:"nodes"`
 }
 
 // sastResultsResponse is the envelope returned by GET /api/sast-results.
