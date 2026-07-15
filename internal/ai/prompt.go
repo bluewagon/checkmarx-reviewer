@@ -14,7 +14,8 @@ that should be fixed) or a FALSE_POSITIVE (not exploitable in practice — e.g. 
 data is sanitized, validated, constant, not attacker-controlled, or the sink is safe in
 this context).
 
-Reason strictly from the code shown, and judge each finding independently. Trace whether
+Reason strictly from the code shown, and judge each finding independently — write each
+explanation as if it were the only finding under review. Trace whether
 attacker-controllable input actually reaches the sink without adequate neutralization. If
 the provided code is insufficient to be sure, lower your confidence rather than guessing.`
 
@@ -34,7 +35,8 @@ have read-only tools (Read, Grep, Glob, LS) to explore it. The file paths in eac
 are relative to that directory. The inlined snippets are only a starting point — when they
 are insufficient (e.g. a bare template/JSP sink, a call into a helper, an unclear sanitizer),
 OPEN the referenced files and SEARCH the codebase for the relevant definitions, includes,
-filters, and validation before deciding. Judge each finding independently, tracing whether
+filters, and validation before deciding. Judge each finding independently — write each
+explanation as if it were the only finding under review — tracing whether
 attacker-controllable input actually reaches the sink without adequate neutralization. Only
 after exploring, if you still cannot be sure, lower your confidence rather than guessing.`
 
@@ -42,7 +44,10 @@ after exploring, if you still cannot be sure, lower your confidence rather than 
 const promptInstruction = `Respond with ONLY a single JSON array and nothing else — no prose, no markdown, no code fences.
 Return exactly one object per finding (%d in total), each keyed by the finding's id:
 [{"id": "<finding id>", "verdict": "TRUE_POSITIVE" | "FALSE_POSITIVE", "confidence": <number between 0 and 1>, "explanation": "<concise justification grounded in the shown code, 2-5 sentences>"}]
-Include every id exactly once.`
+Include every id exactly once.
+Each explanation must stand entirely on its own: it is posted to that finding individually, so
+never reference, compare to, or mention other findings in the batch (no phrasing like "like the
+other findings" or "as with finding X").`
 
 // buildBatchPrompt renders a prompt covering all findings. By default the agent
 // has no tools and all evidence is inlined; when agentic is true the agent is told

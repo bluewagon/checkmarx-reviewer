@@ -492,7 +492,7 @@ func (o *Orchestrator) applyVerdict(ctx context.Context, it *item) {
 		it.fr.StateSet = state
 	}
 
-	comment := formatComment(v, o.opts.Agent, o.opts.Model)
+	comment := formatComment(v)
 
 	if o.opts.DryRun {
 		return
@@ -586,21 +586,16 @@ func alreadyReviewed(history []checkmarx.Predicate) bool {
 }
 
 // formatComment renders the comment posted to Checkmarx.
-func formatComment(v ai.Verdict, agent, model string) string {
+func formatComment(v ai.Verdict) string {
 	label := "TRUE POSITIVE"
 	if v.IsFalsePositive() {
 		label = "FALSE POSITIVE"
 	}
-	via := agent
-	if model != "" {
-		via = agent + " (" + model + ")"
-	}
-	return fmt.Sprintf("%s %s — confidence %d%%\n%s\n—\nvia=%s · reviewed %s · checkmarx-reviewer",
+	return fmt.Sprintf("%s %s — confidence %d%%\n%s\n—\nreviewed %s · checkmarx-reviewer",
 		commentMarker,
 		label,
 		int(v.Confidence*100+0.5),
 		strings.TrimSpace(v.Explanation),
-		via,
 		time.Now().UTC().Format("2006-01-02"),
 	)
 }
