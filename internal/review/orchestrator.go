@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -43,7 +42,6 @@ type Options struct {
 	CostLimitUSD float64 // stop the run once cumulative AI cost exceeds this (0 = no limit)
 	ReTriage     bool    // re-review findings already triaged by this tool
 	Limit        int     // max findings to review this run (0 = no limit); new findings first
-	BaseURI      string  // Checkmarx base URI, used to build UI deep links to findings
 	DryRun       bool
 }
 
@@ -271,7 +269,6 @@ func (o *Orchestrator) prepare(ctx context.Context, projectID string, res checkm
 		it.fr.SinkFile = sink.FileName
 		it.fr.SinkLine = sink.Line
 	}
-	it.fr.Link = findingLink(o.opts.BaseURI, o.opts.ScanID, projectID, res.ID)
 
 	// A cancelled run should not burn an API call per remaining finding.
 	if ctx.Err() != nil {
@@ -622,20 +619,6 @@ func sinkNode(res checkmarx.Result) *checkmarx.Node {
 		return nil
 	}
 	return &res.Nodes[len(res.Nodes)-1]
-}
-
-// findingLink builds the Checkmarx One UI URL for one result, the format used
-// by Checkmarx's own integrations. Without a result ID it falls back to the
-// scan's SAST results page.
-func findingLink(baseURI, scanID, projectID, resultID string) string {
-	if baseURI == "" {
-		return ""
-	}
-	link := fmt.Sprintf("%s/results/%s/%s/sast", strings.TrimRight(baseURI, "/"), scanID, projectID)
-	if resultID != "" {
-		link += "?result-id=" + url.QueryEscape(resultID)
-	}
-	return link
 }
 
 // alreadyReviewed reports whether any predicate comment came from this tool.

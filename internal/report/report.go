@@ -40,7 +40,6 @@ type FindingResult struct {
 	NodesResolved int     `json:"nodesResolved"`
 	CommentPosted bool    `json:"commentPosted"`
 	Duplicates    int     `json:"duplicates,omitempty"` // extra result rows sharing this similarityID
-	Link          string  `json:"link,omitempty"`       // Checkmarx One UI deep link to this finding
 	Error         string  `json:"error,omitempty"`
 }
 

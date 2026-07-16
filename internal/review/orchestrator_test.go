@@ -312,31 +312,6 @@ func TestLimitWithReTriagePrefersFreshFindings(t *testing.T) {
 	}
 }
 
-func TestFindingLinkInReport(t *testing.T) {
-	res := result(1)
-	res.ID = "path/id=1"
-	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{res}}
-	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"}, 0.90, true)
-	o.opts.BaseURI = "https://us.ast.checkmarx.net"
-
-	rep := run(t, o)
-
-	want := "https://us.ast.checkmarx.net/results/scan-1/proj-1/sast?result-id=path%2Fid%3D1"
-	if rep.Findings[0].Link != want {
-		t.Errorf("link = %q, want %q", rep.Findings[0].Link, want)
-	}
-}
-
-func TestFindingLinkFallbacks(t *testing.T) {
-	if got := findingLink("", "s", "p", "r"); got != "" {
-		t.Errorf("empty base should yield empty link, got %q", got)
-	}
-	want := "https://x.example/results/s/p/sast"
-	if got := findingLink("https://x.example/", "s", "p", ""); got != want {
-		t.Errorf("no result id: link = %q, want %q", got, want)
-	}
-}
-
 func TestDryRunWritesNothing(t *testing.T) {
 	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{result(1)}}
 	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictFalsePositive, Confidence: 0.99, Explanation: "x"}, 0.90, true)
