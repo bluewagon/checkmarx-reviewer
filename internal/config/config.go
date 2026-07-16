@@ -42,7 +42,13 @@ type Config struct {
 	CostLimitUSD float64 // stop the run once cumulative AI cost (USD) exceeds this; 0 = no limit
 	ContextLines int
 	ReportPath   string
-	DryRun       bool
+	// ReTriage re-reviews findings already triaged by this tool instead of
+	// skipping them.
+	ReTriage bool
+	// Limit caps how many findings are reviewed this run (0 = no limit). New
+	// findings are selected before re-triaged ones.
+	Limit  int
+	DryRun bool
 	// AgenticSource lets the agent read/search the repo for extra context instead
 	// of relying only on the inlined snippets.
 	AgenticSource bool
@@ -91,6 +97,8 @@ func Load(args []string) (*Config, error) {
 	fs.Float64Var(&cfg.CostLimitUSD, "cost-limit", envFloatOr("CX_AI_COST_LIMIT", DefaultCostLimitUSD), "Stop the run once cumulative AI cost (USD) exceeds this; 0 = no limit (enforced for agents that report cost: the claude CLI and the anthropic API agent)")
 	fs.IntVar(&cfg.ContextLines, "context-lines", DefaultContextLines, "Source lines of context to include around each data-flow node")
 	fs.StringVar(&cfg.ReportPath, "report", DefaultReportPath, "Path to write the JSON report")
+	fs.BoolVar(&cfg.ReTriage, "re-triage", envBoolOr("CX_RETRIAGE", false), "Re-review findings already triaged by this tool (overrides the already-reviewed skip)")
+	fs.IntVar(&cfg.Limit, "limit", envIntOr("CX_LIMIT", 0), "Maximum findings to review this run (0 = no limit); new findings are selected before re-triaged ones")
 	fs.BoolVar(&cfg.DryRun, "dry-run", false, "Compute verdicts and intended actions without writing to Checkmarx")
 	fs.BoolVar(&cfg.AgenticSource, "agentic-source", envBoolOr("CX_AI_AGENTIC_SOURCE", false), "Let the agent read/search the repo for extra context instead of only the inlined snippets (uses more time per finding)")
 	fs.BoolVar(&cfg.Verbose, "verbose", envBoolOr("CX_VERBOSE", false), "Enable debug logging (HTTP requests, agent invocations, full error causes)")
@@ -164,6 +172,9 @@ func (c *Config) validate() error {
 	}
 	if c.Concurrency < 1 {
 		return errors.New("--concurrency must be >= 1")
+	}
+	if c.Limit < 0 {
+		return errors.New("--limit must be >= 0")
 	}
 
 	// A Bitbucket URL is cloned at runtime, so it needn't exist locally, but it

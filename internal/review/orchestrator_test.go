@@ -208,6 +208,135 @@ func TestSkipsAlreadyReviewed(t *testing.T) {
 	}
 }
 
+func TestReTriageReviewsAlreadyReviewed(t *testing.T) {
+	cx := &fakeCx{
+		scan:    &checkmarx.Scan{ProjectID: "proj-1"},
+		results: []checkmarx.Result{result(1)},
+		history: map[string][]checkmarx.Predicate{"1": {{Comment: "[AI-REVIEW] TRUE POSITIVE — confidence 90%"}}},
+	}
+	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.95, Explanation: "x"}, 0.90, false)
+	o.opts.ReTriage = true
+
+	rep := run(t, o)
+
+	if len(cx.posts) != 1 {
+		t.Fatalf("expected re-triage to post, got %d posts", len(cx.posts))
+	}
+	if rep.Reviewed != 1 || rep.Skipped != 0 {
+		t.Errorf("counters wrong: reviewed=%d skipped=%d", rep.Reviewed, rep.Skipped)
+	}
+	if !rep.ReTriage {
+		t.Errorf("report should record reTriage=true")
+	}
+}
+
+func TestLimitCapsReviewedAndMarksRest(t *testing.T) {
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: results(1, 2, 3, 4, 5)}
+	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"}, 0.90, false)
+	o.opts.Limit = 2
+
+	rep := run(t, o)
+
+	if rep.Reviewed != 2 || rep.Skipped != 3 {
+		t.Fatalf("reviewed=%d skipped=%d, want 2/3", rep.Reviewed, rep.Skipped)
+	}
+	limitSkipped := 0
+	for _, f := range rep.Findings {
+		if f.Action == report.ActionSkippedLimit {
+			limitSkipped++
+		}
+	}
+	if limitSkipped != 3 {
+		t.Errorf("expected 3 findings marked %s, got %d", report.ActionSkippedLimit, limitSkipped)
+	}
+	if rep.Limit != 2 {
+		t.Errorf("report should record limit=2, got %d", rep.Limit)
+	}
+}
+
+func TestLimitSkipsPastAlreadyReviewed(t *testing.T) {
+	cx := &fakeCx{
+		scan:    &checkmarx.Scan{ProjectID: "proj-1"},
+		results: results(1, 2, 3),
+		history: map[string][]checkmarx.Predicate{"1": {{Comment: "[AI-REVIEW] done"}}},
+	}
+	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"}, 0.90, false)
+	o.opts.Limit = 2
+
+	rep := run(t, o)
+
+	if rep.Reviewed != 2 {
+		t.Fatalf("reviewed=%d, want 2 (limit should skip past already-reviewed)", rep.Reviewed)
+	}
+	posted := map[string]bool{}
+	for _, p := range cx.posts {
+		posted[p.similarityID] = true
+	}
+	if posted["1"] || !posted["2"] || !posted["3"] {
+		t.Errorf("posted to wrong findings: %v (want 2 and 3 only)", posted)
+	}
+	if rep.Findings[0].Action != report.ActionSkippedAlreadyDone {
+		t.Errorf("finding 1 action = %s, want %s", rep.Findings[0].Action, report.ActionSkippedAlreadyDone)
+	}
+}
+
+func TestLimitWithReTriagePrefersFreshFindings(t *testing.T) {
+	cx := &fakeCx{
+		scan:    &checkmarx.Scan{ProjectID: "proj-1"},
+		results: results(1, 2, 3),
+		history: map[string][]checkmarx.Predicate{
+			"1": {{Comment: "[AI-REVIEW] done"}},
+			"3": {{Comment: "[AI-REVIEW] done"}},
+		},
+	}
+	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"}, 0.90, false)
+	o.opts.ReTriage = true
+	o.opts.Limit = 2
+
+	rep := run(t, o)
+
+	if rep.Reviewed != 2 {
+		t.Fatalf("reviewed=%d, want 2", rep.Reviewed)
+	}
+	posted := map[string]bool{}
+	for _, p := range cx.posts {
+		posted[p.similarityID] = true
+	}
+	// The fresh finding (2) fills the first slot; the earliest already-triaged
+	// finding (1) fills the second; 3 is cut by the limit.
+	if !posted["2"] || !posted["1"] || posted["3"] {
+		t.Errorf("posted to wrong findings: %v (want 2 and 1)", posted)
+	}
+	if rep.Findings[2].Action != report.ActionSkippedLimit {
+		t.Errorf("finding 3 action = %s, want %s", rep.Findings[2].Action, report.ActionSkippedLimit)
+	}
+}
+
+func TestFindingLinkInReport(t *testing.T) {
+	res := result(1)
+	res.ID = "path/id=1"
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{res}}
+	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"}, 0.90, true)
+	o.opts.BaseURI = "https://us.ast.checkmarx.net"
+
+	rep := run(t, o)
+
+	want := "https://us.ast.checkmarx.net/results/scan-1/proj-1/sast?result-id=path%2Fid%3D1"
+	if rep.Findings[0].Link != want {
+		t.Errorf("link = %q, want %q", rep.Findings[0].Link, want)
+	}
+}
+
+func TestFindingLinkFallbacks(t *testing.T) {
+	if got := findingLink("", "s", "p", "r"); got != "" {
+		t.Errorf("empty base should yield empty link, got %q", got)
+	}
+	want := "https://x.example/results/s/p/sast"
+	if got := findingLink("https://x.example/", "s", "p", ""); got != want {
+		t.Errorf("no result id: link = %q, want %q", got, want)
+	}
+}
+
 func TestDryRunWritesNothing(t *testing.T) {
 	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{result(1)}}
 	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictFalsePositive, Confidence: 0.99, Explanation: "x"}, 0.90, true)

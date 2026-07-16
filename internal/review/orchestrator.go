@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -40,6 +41,9 @@ type Options struct {
 	Concurrency  int // max findings/batches processed in parallel (<=1 = sequential)
 	FPThreshold  float64
 	CostLimitUSD float64 // stop the run once cumulative AI cost exceeds this (0 = no limit)
+	ReTriage     bool    // re-review findings already triaged by this tool
+	Limit        int     // max findings to review this run (0 = no limit); new findings first
+	BaseURI      string  // Checkmarx base URI, used to build UI deep links to findings
 	DryRun       bool
 }
 
@@ -162,6 +166,8 @@ func (o *Orchestrator) Run(ctx context.Context) (*report.Report, error) {
 		BatchSize:      o.opts.BatchSize,
 		Concurrency:    max(o.opts.Concurrency, 1),
 		FPThreshold:    o.opts.FPThreshold,
+		ReTriage:       o.opts.ReTriage,
+		Limit:          o.opts.Limit,
 		DryRun:         o.opts.DryRun,
 		GeneratedAt:    time.Now().UTC(),
 		TotalFindings:  len(results),
@@ -181,6 +187,16 @@ func (o *Orchestrator) Run(ctx context.Context) (*report.Report, error) {
 		items[i] = o.prepare(ctx, scan.ProjectID, unique[i])
 		items[i].fr.Duplicates = dupes[unique[i].SimilarityID]
 	})
+
+	// Cap the run at the configured finding limit, preferring fresh findings
+	// over re-triaged ones.
+	if o.opts.Limit > 0 {
+		selected, cut := applyLimit(items, o.opts.Limit)
+		if cut > 0 {
+			o.log.Info("finding limit applied", "limit", o.opts.Limit,
+				"selected", selected, "skipped", cut)
+		}
+	}
 
 	// Phase 2: review non-terminal findings in bounded batches, with per-finding
 	// fallback for anything a batch fails to answer. Stops early on cost limit.
@@ -234,6 +250,10 @@ type item struct {
 	verdict    ai.Verdict
 	hasVerdict bool
 	terminal   bool // skipped or errored before/without AI review
+	// previouslyReviewed marks findings with a prior comment from this tool;
+	// under ReTriage they stay reviewable but yield to fresh findings when a
+	// limit applies.
+	previouslyReviewed bool
 }
 
 // prepare runs the idempotency check and builds source evidence for one finding.
@@ -251,6 +271,7 @@ func (o *Orchestrator) prepare(ctx context.Context, projectID string, res checkm
 		it.fr.SinkFile = sink.FileName
 		it.fr.SinkLine = sink.Line
 	}
+	it.fr.Link = findingLink(o.opts.BaseURI, o.opts.ScanID, projectID, res.ID)
 
 	// A cancelled run should not burn an API call per remaining finding.
 	if ctx.Err() != nil {
@@ -268,7 +289,8 @@ func (o *Orchestrator) prepare(ctx context.Context, projectID string, res checkm
 		it.terminal = true
 		return it
 	}
-	if alreadyReviewed(history) {
+	it.previouslyReviewed = alreadyReviewed(history)
+	if it.previouslyReviewed && !o.opts.ReTriage {
 		it.fr.Action = report.ActionSkippedAlreadyDone
 		it.terminal = true
 		return it
@@ -382,6 +404,32 @@ func (o *Orchestrator) snapshotSpent() ai.Usage {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.spent
+}
+
+// applyLimit keeps at most limit reviewable findings — fresh ones first (in
+// input order), then previously-reviewed ones (present only under ReTriage) —
+// and marks the rest terminal as limit-skipped. It returns how many findings
+// were selected and how many were cut.
+func applyLimit(items []*item, limit int) (selected, cut int) {
+	var candidates []*item
+	for _, it := range items {
+		if !it.terminal && !it.previouslyReviewed {
+			candidates = append(candidates, it)
+		}
+	}
+	for _, it := range items {
+		if !it.terminal && it.previouslyReviewed {
+			candidates = append(candidates, it)
+		}
+	}
+	if len(candidates) <= limit {
+		return len(candidates), 0
+	}
+	for _, it := range candidates[limit:] {
+		it.fr.Action = report.ActionSkippedLimit
+		it.terminal = true
+	}
+	return limit, len(candidates) - limit
 }
 
 // markSkipped records findings left unreviewed (cost limit hit or run cancelled)
@@ -576,6 +624,20 @@ func sinkNode(res checkmarx.Result) *checkmarx.Node {
 	return &res.Nodes[len(res.Nodes)-1]
 }
 
+// findingLink builds the Checkmarx One UI URL for one result, the format used
+// by Checkmarx's own integrations. Without a result ID it falls back to the
+// scan's SAST results page.
+func findingLink(baseURI, scanID, projectID, resultID string) string {
+	if baseURI == "" {
+		return ""
+	}
+	link := fmt.Sprintf("%s/results/%s/%s/sast", strings.TrimRight(baseURI, "/"), scanID, projectID)
+	if resultID != "" {
+		link += "?result-id=" + url.QueryEscape(resultID)
+	}
+	return link
+}
+
 // alreadyReviewed reports whether any predicate comment came from this tool.
 func alreadyReviewed(history []checkmarx.Predicate) bool {
 	for _, p := range history {
@@ -604,7 +666,7 @@ func formatComment(v ai.Verdict) string {
 // tally updates report counters from a finding outcome.
 func tally(rep *report.Report, fr report.FindingResult) {
 	switch fr.Action {
-	case report.ActionSkippedAlreadyDone, report.ActionSkippedBudget, report.ActionSkippedCancelled:
+	case report.ActionSkippedAlreadyDone, report.ActionSkippedLimit, report.ActionSkippedBudget, report.ActionSkippedCancelled:
 		rep.Skipped++
 	case report.ActionError:
 		rep.Errors++

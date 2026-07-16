@@ -44,7 +44,7 @@ func run(args []string) error {
 	}
 	logger.Info("run configuration", "scanId", cfg.ScanID, "severities", cfg.Severities, "agent", cfg.Agent,
 		"model", cfg.Model, "batchSize", cfg.BatchSize, "concurrency", cfg.Concurrency,
-		"agenticSource", cfg.AgenticSource, "dryRun", cfg.DryRun)
+		"agenticSource", cfg.AgenticSource, "reTriage", cfg.ReTriage, "limit", cfg.Limit, "dryRun", cfg.DryRun)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -92,6 +92,9 @@ func run(args []string) error {
 		Concurrency:  cfg.Concurrency,
 		FPThreshold:  cfg.FPThreshold,
 		CostLimitUSD: cfg.CostLimitUSD,
+		ReTriage:     cfg.ReTriage,
+		Limit:        cfg.Limit,
+		BaseURI:      cfg.BaseURI,
 		DryRun:       cfg.DryRun,
 	}, logger)
 
@@ -114,6 +117,17 @@ func run(args []string) error {
 		"stateChanges", rep.StateChanges,
 		"costUsd", fmt.Sprintf("%.4f", rep.EstimatedCostUSD), "tokens", rep.TotalTokens,
 		"report", cfg.ReportPath)
+
+	// On a limited run, list the findings that were reviewed so they are easy to
+	// open in the Checkmarx UI.
+	if cfg.Limit > 0 {
+		for _, f := range rep.Findings {
+			if report.IsReviewed(f.Action) {
+				logger.Info("reviewed finding", "query", f.QueryName, "severity", f.Severity,
+					"verdict", f.Verdict, "link", f.Link)
+			}
+		}
+	}
 
 	// Non-zero exit if the run aborted on the cost limit, so pipelines notice the
 	// review was incomplete.

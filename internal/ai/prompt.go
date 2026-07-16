@@ -14,6 +14,18 @@ that should be fixed) or a FALSE_POSITIVE (not exploitable in practice — e.g. 
 data is sanitized, validated, constant, not attacker-controlled, or the sink is safe in
 this context).
 
+Scope: each scan covers a single repository, so you cannot see how code in other
+repositories consumes this one. Data leaving this repo — for example a value returned in a
+JSON or other non-HTML API response — may be rendered or executed by a separate frontend or
+service that is not part of this scan. Therefore do NOT rule a finding FALSE_POSITIVE merely
+because exploitability would depend on the behavior of a downstream consumer you cannot
+observe. In particular, do not dismiss reflected or stored XSS on the grounds that the
+immediate sink returns JSON or an API response and "a browser won't execute it," since the
+consuming UI could reflect the value without output encoding. When the only basis for a
+false-positive verdict would be the behavior of an unseen downstream consumer, treat the
+finding as a TRUE_POSITIVE and note in your explanation that downstream handling (e.g. UI
+output encoding) could not be verified within this repository's scan.
+
 Reason strictly from the code shown, and judge each finding independently — write each
 explanation as if it were the only finding under review. Trace whether
 attacker-controllable input actually reaches the sink without adequate neutralization. If
@@ -29,6 +41,18 @@ For EACH finding, decide whether it is a TRUE_POSITIVE (a real, exploitable vuln
 that should be fixed) or a FALSE_POSITIVE (not exploitable in practice — e.g. the tainted
 data is sanitized, validated, constant, not attacker-controlled, or the sink is safe in
 this context).
+
+Scope: each scan covers a single repository, so you cannot see how code in other
+repositories consumes this one. Data leaving this repo — for example a value returned in a
+JSON or other non-HTML API response — may be rendered or executed by a separate frontend or
+service that is not part of this scan. Therefore do NOT rule a finding FALSE_POSITIVE merely
+because exploitability would depend on the behavior of a downstream consumer you cannot
+observe. In particular, do not dismiss reflected or stored XSS on the grounds that the
+immediate sink returns JSON or an API response and "a browser won't execute it," since the
+consuming UI could reflect the value without output encoding. When the only basis for a
+false-positive verdict would be the behavior of an unseen downstream consumer, treat the
+finding as a TRUE_POSITIVE and note in your explanation that downstream handling (e.g. UI
+output encoding) could not be verified within this repository's scan.
 
 IMPORTANT: The scanned repository is checked out at your current working directory, and you
 have read-only tools (Read, Grep, Glob, LS) to explore it. The file paths in each finding

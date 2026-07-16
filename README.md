@@ -32,8 +32,11 @@ scan-id ──▶ GET /api/scans/{id}            → projectId
 ```
 
 Findings already carrying an `[AI-REVIEW]` comment are **skipped**, so re-runs are
-idempotent. The run stops early once cumulative AI cost crosses `--cost-limit`
-(findings reviewed so far still get their results; the run exits non-zero).
+idempotent; pass `--re-triage` to review them again. `--limit N` caps a run at N
+reviewed findings (new findings are selected before re-triaged ones), and a limited
+run prints a Checkmarx UI link for each reviewed finding at the end. The run stops
+early once cumulative AI cost crosses `--cost-limit` (findings reviewed so far
+still get their results; the run exits non-zero).
 
 ## Requirements
 
@@ -77,6 +80,8 @@ Checkmarx connection settings come from the environment (see [.env.example](.env
 | `CX_AI_BATCH_SIZE` | no | Default `--batch-size` |
 | `CX_CONCURRENCY` | no | Default `--concurrency` |
 | `CX_AI_COST_LIMIT` | no | Default `--cost-limit` |
+| `CX_RETRIAGE` | no | Default `--re-triage` |
+| `CX_LIMIT` | no | Default `--limit` |
 | `CX_AI_AGENTIC_SOURCE` | no | Default `--agentic-source` |
 | `CX_VERBOSE` | no | Default `--verbose` |
 | `CX_LOG_DIR` | no | Default `--log-dir` |
@@ -122,6 +127,8 @@ go build -o checkmarx-reviewer .
 | `--agent-timeout` | `600` | Per-invocation agent timeout, in seconds |
 | `--fp-confidence-threshold` | `0.90` | Min confidence [0-1] to auto-set Proposed Not Exploitable |
 | `--cost-limit` | `0` (no limit) | Stop the run once cumulative AI cost (USD) exceeds this; enforced for agents that report cost (`claude` CLI, `anthropic` API) |
+| `--re-triage` | `false` | Re-review findings already triaged by this tool (overrides the already-reviewed skip) |
+| `--limit` | `0` (no limit) | Maximum findings to review this run; new findings are selected before re-triaged ones. Links to the reviewed findings are printed at the end |
 | `--agentic-source` | `false` | Let the agent read/search the repo for extra context instead of only the inlined snippets (uses more time per finding) |
 | `--context-lines` | `8` | Source lines of context around each data-flow node |
 | `--report` | `checkmarx-ai-review.json` | Output report path |

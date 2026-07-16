@@ -12,10 +12,16 @@ const (
 	ActionCommented          = "COMMENTED"                // comment posted, state unchanged
 	ActionProposedNotExploit = "PROPOSED_NOT_EXPLOITABLE" // comment posted + state changed
 	ActionSkippedAlreadyDone = "SKIPPED_ALREADY_REVIEWED" // prior AI comment found
+	ActionSkippedLimit       = "SKIPPED_LIMIT_REACHED"    // finding limit (--limit) reached
 	ActionSkippedBudget      = "SKIPPED_COST_LIMIT"       // run stopped: cost limit reached
 	ActionSkippedCancelled   = "SKIPPED_CANCELLED"        // run cancelled (signal/timeout)
 	ActionError              = "ERROR"                    // per-finding failure
 )
+
+// IsReviewed reports whether the action represents a completed AI review.
+func IsReviewed(action string) bool {
+	return action == ActionCommented || action == ActionProposedNotExploit
+}
 
 // FindingResult records the outcome for one finding.
 type FindingResult struct {
@@ -34,6 +40,7 @@ type FindingResult struct {
 	NodesResolved int     `json:"nodesResolved"`
 	CommentPosted bool    `json:"commentPosted"`
 	Duplicates    int     `json:"duplicates,omitempty"` // extra result rows sharing this similarityID
+	Link          string  `json:"link,omitempty"`       // Checkmarx One UI deep link to this finding
 	Error         string  `json:"error,omitempty"`
 }
 
@@ -47,6 +54,8 @@ type Report struct {
 	BatchSize      int       `json:"batchSize"`
 	Concurrency    int       `json:"concurrency"`
 	FPThreshold    float64   `json:"fpConfidenceThreshold"`
+	ReTriage       bool      `json:"reTriage,omitempty"` // already-reviewed findings were re-reviewed
+	Limit          int       `json:"limit,omitempty"`    // max findings reviewed this run (0 = no limit)
 	DryRun         bool      `json:"dryRun"`
 	GeneratedAt    time.Time `json:"generatedAt"`
 	TotalFindings  int       `json:"totalFindings"`

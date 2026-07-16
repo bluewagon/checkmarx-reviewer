@@ -26,6 +26,8 @@ func setEnv(t *testing.T) {
 	t.Setenv("CX_VERBOSE", "")
 	t.Setenv("CX_LOG_DIR", "")
 	t.Setenv("CX_SEVERITY", "")
+	t.Setenv("CX_RETRIAGE", "")
+	t.Setenv("CX_LIMIT", "")
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -104,6 +106,59 @@ func TestLoadRejectsEmptySeverity(t *testing.T) {
 	_, err := Load([]string{"--scan-id", "s", "--repo-path", t.TempDir(), "--severity", " , "})
 	if err == nil || !strings.Contains(err.Error(), "severity") {
 		t.Fatalf("expected severity error, got %v", err)
+	}
+}
+
+func TestLoadReTriageAndLimitDefaults(t *testing.T) {
+	setEnv(t)
+	cfg, err := Load([]string{"--scan-id", "s", "--repo-path", t.TempDir()})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ReTriage {
+		t.Errorf("re-triage should default to false")
+	}
+	if cfg.Limit != 0 {
+		t.Errorf("limit = %d, want 0 (no limit)", cfg.Limit)
+	}
+}
+
+func TestLoadReTriageAndLimitFlags(t *testing.T) {
+	setEnv(t)
+	cfg, err := Load([]string{"--scan-id", "s", "--repo-path", t.TempDir(),
+		"--re-triage", "--limit", "5"})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.ReTriage {
+		t.Errorf("re-triage flag not applied")
+	}
+	if cfg.Limit != 5 {
+		t.Errorf("limit = %d, want 5", cfg.Limit)
+	}
+}
+
+func TestLoadReTriageAndLimitEnvDefaults(t *testing.T) {
+	setEnv(t)
+	t.Setenv("CX_RETRIAGE", "true")
+	t.Setenv("CX_LIMIT", "3")
+	cfg, err := Load([]string{"--scan-id", "s", "--repo-path", t.TempDir()})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.ReTriage {
+		t.Errorf("CX_RETRIAGE not applied")
+	}
+	if cfg.Limit != 3 {
+		t.Errorf("limit = %d, want 3 from CX_LIMIT", cfg.Limit)
+	}
+}
+
+func TestLoadRejectsBadLimit(t *testing.T) {
+	setEnv(t)
+	_, err := Load([]string{"--scan-id", "s", "--repo-path", t.TempDir(), "--limit", "-1"})
+	if err == nil || !strings.Contains(err.Error(), "--limit") {
+		t.Fatalf("expected limit error, got %v", err)
 	}
 }
 
