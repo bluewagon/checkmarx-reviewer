@@ -2,6 +2,7 @@ package checkmarx
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -24,7 +25,7 @@ func (c *Client) ListToVerify(ctx context.Context, scanID string, severities []s
 		for _, s := range severities {
 			q.Add("severity", s)
 		}
-		q.Set("state", StateToVerify)
+		q.Set("state", fmt.Sprintf("%s,%s", StateToVerify, StateProposedNotExploitable))
 		q.Set("limit", strconv.Itoa(resultsPageSize))
 		q.Set("offset", strconv.Itoa(offset))
 
