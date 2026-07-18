@@ -90,7 +90,8 @@ func TestListToVerifyPagination(t *testing.T) {
 		if len(q["severity"]) != 2 || q["severity"][0] != SeverityHigh || q["severity"][1] != SeverityMedium {
 			t.Errorf("severity params = %v, want [HIGH MEDIUM]", q["severity"])
 		}
-		if q.Get("state") != StateToVerify || q.Get("scan-id") != "scan-1" {
+		wantState := StateToVerify + "," + StateProposedNotExploitable
+		if q.Get("state") != wantState || q.Get("scan-id") != "scan-1" {
 			t.Errorf("unexpected query: %v", q)
 		}
 		offset, _ := strconv.Atoi(q.Get("offset"))
