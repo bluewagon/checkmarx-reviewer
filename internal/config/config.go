@@ -29,19 +29,22 @@ type Config struct {
 	BitbucketToken string // CX_BITBUCKET_TOKEN — HTTP access token for cloning
 
 	// Run parameters (from flags).
-	ScanID       string
-	Severities   []string // severities of TO_VERIFY findings to triage (normalized to uppercase)
-	RepoPath     string
-	Agent        string // "claude" or "copilot"
-	AgentBin     string // optional override of the agent binary name/path
-	Model        string // agent model id (may be empty to use agent default)
-	AgentTimeout time.Duration
-	BatchSize    int // findings reviewed per agent invocation
-	Concurrency  int // max findings/batches processed in parallel (1 = sequential)
-	FPThreshold  float64
-	CostLimitUSD float64 // stop the run once cumulative AI cost (USD) exceeds this; 0 = no limit
-	ContextLines int
-	ReportPath   string
+	ScanID     string
+	Severities []string // severities of TO_VERIFY findings to triage (normalized to uppercase)
+	RepoPath   string
+	// StripPathPrefix is a leading directory prefix (e.g. "/something/sast")
+	// removed from Checkmarx result file paths so they match --repo-path.
+	StripPathPrefix string
+	Agent           string // "claude" or "copilot"
+	AgentBin        string // optional override of the agent binary name/path
+	Model           string // agent model id (may be empty to use agent default)
+	AgentTimeout    time.Duration
+	BatchSize       int // findings reviewed per agent invocation
+	Concurrency     int // max findings/batches processed in parallel (1 = sequential)
+	FPThreshold     float64
+	CostLimitUSD    float64 // stop the run once cumulative AI cost (USD) exceeds this; 0 = no limit
+	ContextLines    int
+	ReportPath      string
 	// ReTriage re-reviews findings already triaged by this tool instead of
 	// skipping them.
 	ReTriage bool
@@ -87,6 +90,8 @@ func Load(args []string) (*Config, error) {
 	fs.StringVar(&severities, "severity", envOr("CX_SEVERITY", DefaultSeverity),
 		"Comma-separated severities of To-Verify findings to triage: "+strings.Join(checkmarx.Severities(), " | "))
 	fs.StringVar(&cfg.RepoPath, "repo-path", "", "Local checkout matching the scanned commit, or a Bitbucket clone/browse URL to shallow-clone (required)")
+	fs.StringVar(&cfg.StripPathPrefix, "strip-path-prefix", os.Getenv("CX_STRIP_PATH_PREFIX"),
+		"Leading directory prefix to strip from Checkmarx result file paths so they match --repo-path (default: $CX_STRIP_PATH_PREFIX)")
 	fs.StringVar(&cfg.Agent, "agent", envOr("CX_AI_AGENT", DefaultAgent), "AI agent CLI to use: "+strings.Join(ai.SupportedAgents(), " | "))
 	fs.StringVar(&cfg.AgentBin, "agent-bin", os.Getenv("CX_AI_AGENT_BIN"), "Override the agent binary name/path (default: the agent's own command; ignored for the anthropic API agent)")
 	fs.StringVar(&cfg.Model, "model", os.Getenv("CX_AI_MODEL"), "Model id to pass to the agent (default: the agent's default)")

@@ -338,6 +338,71 @@ func TestDryRunWritesNothing(t *testing.T) {
 	}
 }
 
+func TestStripPathPrefix(t *testing.T) {
+	tests := []struct {
+		name, prefix, in, want string
+	}{
+		{"match stripped", "/something/sast", "/something/sast/auth-api/x.go", "/auth-api/x.go"},
+		{"trailing slash in prefix", "/something/sast/", "/something/sast/auth-api/x.go", "/auth-api/x.go"},
+		{"no leading slash in prefix", "something/sast", "/something/sast/auth-api/x.go", "/auth-api/x.go"},
+		{"non-matching path untouched", "/something/sast", "/auth-api/x.go", "/auth-api/x.go"},
+		{"segment boundary respected", "/something/sast", "/something/sastx/auth-api/x.go", "/something/sastx/auth-api/x.go"},
+		{"empty prefix no-op", "", "/something/sast/auth-api/x.go", "/something/sast/auth-api/x.go"},
+		{"slash-only prefix no-op", "/", "/something/sast/auth-api/x.go", "/something/sast/auth-api/x.go"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rs := []checkmarx.Result{result(1)}
+			rs[0].Nodes[0].FileName = tc.in
+			stripped := stripPathPrefix(rs, tc.prefix)
+			if got := rs[0].Nodes[0].FileName; got != tc.want {
+				t.Errorf("stripPathPrefix(%q, %q) left %q, want %q", tc.in, tc.prefix, got, tc.want)
+			}
+			if wantN := btoi(tc.in != tc.want); stripped != wantN {
+				t.Errorf("stripped count = %d, want %d", stripped, wantN)
+			}
+		})
+	}
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func TestStripPathPrefixAppliedToPipeline(t *testing.T) {
+	res := result(1)
+	res.Nodes[0].FileName = "/something/sast/auth-api/a.go"
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{res}}
+	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"}, 0.90, false)
+	o.opts.StripPathPrefix = "/something/sast"
+
+	rep := run(t, o)
+
+	if rep.Findings[0].SinkFile != "/auth-api/a.go" {
+		t.Errorf("sinkFile = %q, want stripped %q", rep.Findings[0].SinkFile, "/auth-api/a.go")
+	}
+}
+
+func TestWarnsWhenNoSnippetsResolve(t *testing.T) {
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{result(1)}}
+	var logs bytes.Buffer
+	o := New(cx, &fakeReviewer{v: ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"}},
+		source.NewReader(t.TempDir(), 2), Options{
+			ScanID: "scan-1", Severities: []string{checkmarx.SeverityHigh}, Model: "claude-test",
+			BatchSize: 10, FPThreshold: 0.90,
+		}, slog.New(slog.NewTextHandler(&logs, nil)))
+
+	run(t, o)
+
+	// The repo root is an empty temp dir, so no node source can resolve.
+	if !strings.Contains(logs.String(), "no source snippets resolved") {
+		t.Errorf("expected unresolved-snippets warning in log:\n%s", logs.String())
+	}
+}
+
 func TestBatchingChunksBySizeAndPreservesOrder(t *testing.T) {
 	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: results(1, 2, 3, 4, 5)}
 	rev := &fakeReviewer{v: ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"}}

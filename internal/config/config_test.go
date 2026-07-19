@@ -28,6 +28,7 @@ func setEnv(t *testing.T) {
 	t.Setenv("CX_SEVERITY", "")
 	t.Setenv("CX_RETRIAGE", "")
 	t.Setenv("CX_LIMIT", "")
+	t.Setenv("CX_STRIP_PATH_PREFIX", "")
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -277,6 +278,36 @@ func TestLoadBitbucketTokenFlagOverridesEnv(t *testing.T) {
 	}
 	if cfg.BitbucketToken != "flag" {
 		t.Errorf("flag should override env: got %q, want %q", cfg.BitbucketToken, "flag")
+	}
+}
+
+func TestLoadStripPathPrefix(t *testing.T) {
+	setEnv(t)
+	base := []string{"--scan-id", "s", "--repo-path", t.TempDir()}
+
+	cfg, err := Load(base)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.StripPathPrefix != "" {
+		t.Errorf("StripPathPrefix should default to empty, got %q", cfg.StripPathPrefix)
+	}
+
+	t.Setenv("CX_STRIP_PATH_PREFIX", "/env/sast")
+	cfg, err = Load(base)
+	if err != nil {
+		t.Fatalf("Load with env: %v", err)
+	}
+	if cfg.StripPathPrefix != "/env/sast" {
+		t.Errorf("StripPathPrefix = %q, want %q from env", cfg.StripPathPrefix, "/env/sast")
+	}
+
+	cfg, err = Load(append(base, "--strip-path-prefix", "/flag/sast"))
+	if err != nil {
+		t.Fatalf("Load with flag: %v", err)
+	}
+	if cfg.StripPathPrefix != "/flag/sast" {
+		t.Errorf("flag should override env: got %q, want %q", cfg.StripPathPrefix, "/flag/sast")
 	}
 }
 

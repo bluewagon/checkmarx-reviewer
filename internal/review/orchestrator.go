@@ -32,17 +32,20 @@ type CheckmarxClient interface {
 
 // Options configure a run.
 type Options struct {
-	ScanID       string
-	Severities   []string // severities of TO_VERIFY findings to triage
-	Agent        string
-	Model        string
-	BatchSize    int
-	Concurrency  int // max findings/batches processed in parallel (<=1 = sequential)
-	FPThreshold  float64
-	CostLimitUSD float64 // stop the run once cumulative AI cost exceeds this (0 = no limit)
-	ReTriage     bool    // re-review findings already triaged by this tool
-	Limit        int     // max findings to review this run (0 = no limit); new findings first
-	DryRun       bool
+	ScanID     string
+	Severities []string // severities of TO_VERIFY findings to triage
+	// StripPathPrefix is a leading directory prefix (e.g. "/something/sast")
+	// removed from result file paths so they resolve against the local checkout.
+	StripPathPrefix string
+	Agent           string
+	Model           string
+	BatchSize       int
+	Concurrency     int // max findings/batches processed in parallel (<=1 = sequential)
+	FPThreshold     float64
+	CostLimitUSD    float64 // stop the run once cumulative AI cost exceeds this (0 = no limit)
+	ReTriage        bool    // re-review findings already triaged by this tool
+	Limit           int     // max findings to review this run (0 = no limit); new findings first
+	DryRun          bool
 }
 
 // Orchestrator wires the collaborators together.
@@ -131,6 +134,10 @@ func (o *Orchestrator) Run(ctx context.Context) (*report.Report, error) {
 	results, err := o.cx.ListToVerify(ctx, o.opts.ScanID, o.opts.Severities)
 	if err != nil {
 		return nil, fmt.Errorf("listing findings: %w", err)
+	}
+	if stripped := stripPathPrefix(results, o.opts.StripPathPrefix); stripped > 0 {
+		o.log.Info("stripped path prefix from result file paths",
+			"prefix", o.opts.StripPathPrefix, "paths", stripped)
 	}
 	if len(results) == 0 {
 		return nil, fmt.Errorf("no %s/TO_VERIFY findings returned for scan %s",
@@ -296,6 +303,10 @@ func (o *Orchestrator) prepare(ctx context.Context, projectID string, res checkm
 	finding, resolved := o.buildFinding(res)
 	it.finding = finding
 	it.fr.NodesResolved = resolved
+	if resolved == 0 && len(res.Nodes) > 0 {
+		o.log.Warn("no source snippets resolved for finding — check --repo-path and CX_STRIP_PATH_PREFIX",
+			"similarityId", simID, "query", res.QueryName, "file", res.Nodes[0].FileName)
+	}
 	o.log.Debug("finding prepared", "similarityId", simID, "query", res.QueryName,
 		"nodesTotal", len(res.Nodes), "nodesResolved", resolved)
 	return it
@@ -601,6 +612,29 @@ func (o *Orchestrator) buildFinding(res checkmarx.Result) (ai.Finding, int) {
 		f.Nodes = append(f.Nodes, nc)
 	}
 	return f, resolved
+}
+
+// stripPathPrefix removes the configured leading directory prefix from node file
+// paths so they resolve against the local checkout (Checkmarx pipeline scans may
+// nest the repo under extra directories, e.g. "/something/sast/<repo>"). Matching
+// is segment-aware: prefix "/a/sast" strips "/a/sast/x.go" but not "/a/sastx.go".
+// Returns the number of paths stripped.
+func stripPathPrefix(results []checkmarx.Result, prefix string) int {
+	prefix = "/" + strings.Trim(prefix, "/")
+	if prefix == "/" {
+		return 0
+	}
+	stripped := 0
+	for ri := range results {
+		for ni := range results[ri].Nodes {
+			n := &results[ri].Nodes[ni]
+			if rest, ok := strings.CutPrefix(n.FileName, prefix+"/"); ok {
+				n.FileName = "/" + rest
+				stripped++
+			}
+		}
+	}
+	return stripped
 }
 
 // dedupeBySimilarityID keeps the first result for each similarityID (in input

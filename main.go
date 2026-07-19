@@ -44,7 +44,8 @@ func run(args []string) error {
 	}
 	logger.Info("run configuration", "scanId", cfg.ScanID, "severities", cfg.Severities, "agent", cfg.Agent,
 		"model", cfg.Model, "batchSize", cfg.BatchSize, "concurrency", cfg.Concurrency,
-		"agenticSource", cfg.AgenticSource, "reTriage", cfg.ReTriage, "limit", cfg.Limit, "dryRun", cfg.DryRun)
+		"agenticSource", cfg.AgenticSource, "reTriage", cfg.ReTriage, "limit", cfg.Limit, "dryRun", cfg.DryRun,
+		"stripPathPrefix", cfg.StripPathPrefix)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -84,17 +85,18 @@ func run(args []string) error {
 	reader := source.NewReader(repoRoot, cfg.ContextLines)
 
 	orch := review.New(cx, reviewer, reader, review.Options{
-		ScanID:       cfg.ScanID,
-		Severities:   cfg.Severities,
-		Agent:        cfg.Agent,
-		Model:        reviewer.Model(),
-		BatchSize:    cfg.BatchSize,
-		Concurrency:  cfg.Concurrency,
-		FPThreshold:  cfg.FPThreshold,
-		CostLimitUSD: cfg.CostLimitUSD,
-		ReTriage:     cfg.ReTriage,
-		Limit:        cfg.Limit,
-		DryRun:       cfg.DryRun,
+		ScanID:          cfg.ScanID,
+		Severities:      cfg.Severities,
+		StripPathPrefix: cfg.StripPathPrefix,
+		Agent:           cfg.Agent,
+		Model:           reviewer.Model(),
+		BatchSize:       cfg.BatchSize,
+		Concurrency:     cfg.Concurrency,
+		FPThreshold:     cfg.FPThreshold,
+		CostLimitUSD:    cfg.CostLimitUSD,
+		ReTriage:        cfg.ReTriage,
+		Limit:           cfg.Limit,
+		DryRun:          cfg.DryRun,
 	}, logger)
 
 	if cfg.DryRun {
