@@ -168,8 +168,8 @@ func TestAgenticSourceNotedInCommentAndReport(t *testing.T) {
 
 	rep := run(t, o)
 
-	if !strings.Contains(cx.posts[0].comment, "repo exploration used") {
-		t.Errorf("comment should note repo exploration: %q", cx.posts[0].comment)
+	if !strings.Contains(cx.posts[0].comment, "agentic source used") {
+		t.Errorf("comment should note agentic source: %q", cx.posts[0].comment)
 	}
 	if !rep.Findings[0].AgenticSource {
 		t.Errorf("report should record agentic source: %+v", rep.Findings[0])
@@ -182,8 +182,8 @@ func TestNoAgenticSourceLeavesCommentUnchanged(t *testing.T) {
 
 	rep := run(t, o)
 
-	if strings.Contains(cx.posts[0].comment, "repo exploration") {
-		t.Errorf("comment should not mention repo exploration: %q", cx.posts[0].comment)
+	if strings.Contains(cx.posts[0].comment, "agentic source") {
+		t.Errorf("comment should not mention agentic source: %q", cx.posts[0].comment)
 	}
 	if !strings.HasSuffix(cx.posts[0].comment, "checkmarx-reviewer") {
 		t.Errorf("footer should end with the tool name: %q", cx.posts[0].comment)

@@ -682,7 +682,7 @@ func formatComment(v ai.Verdict) string {
 	}
 	footer := "checkmarx-reviewer"
 	if v.AgenticSource {
-		footer += " · repo exploration used"
+		footer += " · agentic source used"
 	}
 	return fmt.Sprintf("%s %s — confidence %d%%\n%s\n—\nreviewed %s · %s",
 		commentMarker,

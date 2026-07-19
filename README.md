@@ -114,12 +114,51 @@ go build -o checkmarx-reviewer .
   --repo-path https://bitbucket.example.com/projects/PROJ/repos/repo/browse
 ```
 
+### `--repo-path` and `--strip-path-prefix`
+
+Checkmarx reports each data-flow node's file as an absolute-looking path (`fileName`
+in the API response). Path resolution is a single, literal step — **strip the
+configured prefix, then join what's left directly onto `--repo-path`**:
+
+```
+node fileName          "/<extra-prefix>/<repo-name>/src/main/java/Foo.java"
+− strip-path-prefix     "/<extra-prefix>"
+= remainder                             "/<repo-name>/src/main/java/Foo.java"
++ join onto repo-path   <repo-path> + remainder
+```
+
+There's no separate "repo name" handling — whatever survives the strip must be
+**exactly** the path from `--repo-path` down to the file. That means `--repo-path`
+must point at the directory *containing* the repo checkout (the parent of
+`<repo-name>`), not the checkout itself, whenever the surviving path still starts
+with the repo's own name:
+
+```bash
+# Repo checked out at: <local-checkouts-dir>/<extra-prefix>/<repo-name>
+CX_STRIP_PATH_PREFIX=/<extra-prefix>            # constant — same for every repo/scan
+./checkmarx-reviewer --scan-id ... \
+  --repo-path <local-checkouts-dir>/<extra-prefix>   # parent of the checkout, NOT .../<repo-name>
+```
+
+This keeps `CX_STRIP_PATH_PREFIX` fixed in `.env` across every scan, while
+`--repo-path` (already required per run) is simply one directory shallower than
+the checkout itself.
+
+If instead you keep `--repo-path` pointed directly at the checkout
+(`<local-checkouts-dir>/<extra-prefix>/<repo-name>`), the prefix must include the
+repo name too (`--strip-path-prefix /<extra-prefix>/<repo-name>`) — correct, but
+no longer reusable across repos with different names.
+
+Not sure what Checkmarx is actually sending? Run with the default `--log-dir logs`
+and check `logs/<run>/checkmarx/` for the raw `/api/sast-results` response —
+look at any node's `fileName` directly rather than guessing.
+
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--scan-id` | (required) | Scan to review |
-| `--repo-path` | (required) | Local checkout matching the scanned commit, or a Bitbucket clone/browse URL to shallow-clone |
+| `--repo-path` | (required) | Local checkout matching the scanned commit, or a Bitbucket clone/browse URL to shallow-clone. See [below](#--repo-path-and---strip-path-prefix) if used with `--strip-path-prefix` |
 | `--severity` | `HIGH` | Comma-separated severities of To-Verify findings to triage: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `INFO` (case-insensitive), e.g. `--severity critical,high` |
 | `--agent` | `claude` | AI agent: `claude`, `copilot`, or `anthropic` (direct API call, no CLI) |
 | `--model` | (agent default) | Model id passed to the agent (`claude`/`anthropic` default to `claude-opus-4-8`; `copilot` uses its configured default) |
@@ -133,7 +172,7 @@ go build -o checkmarx-reviewer .
 | `--limit` | `0` (no limit) | Maximum findings to review this run; new findings are selected before re-triaged ones. The `similarityId` of each reviewed finding is printed at the end |
 | `--agentic-source` | `false` | Let the agent read/search the repo for extra context instead of only the inlined snippets (uses more time per finding) |
 | `--context-lines` | `8` | Source lines of context around each data-flow node |
-| `--strip-path-prefix` | `""` | Leading directory prefix to strip from Checkmarx result file paths so they match `--repo-path`, e.g. `/something/sast` if pipeline scans report `/something/sast/<repo>/...` but `--repo-path` is just the repo checkout |
+| `--strip-path-prefix` | `""` | Leading directory prefix to strip from Checkmarx result file paths before joining onto `--repo-path` — see [below](#--repo-path-and---strip-path-prefix) |
 | `--report` | `checkmarx-ai-review.json` | Output report path |
 | `--dry-run` | `false` | Compute everything, write nothing to Checkmarx |
 | `--bitbucket-token` | `$CX_BITBUCKET_TOKEN` | Bitbucket HTTP access token, required when `--repo-path` is a URL |
@@ -196,8 +235,9 @@ reviewed 2026-07-08 · checkmarx-reviewer
 
 With `--agentic-source`, the agent reports per finding whether it actually needed
 to explore the repo beyond the inlined snippets to decide; when it did, the footer
-gains a ` · repo exploration used` tag (also recorded as `agenticSource` in the
-JSON report).
+gains a ` · agentic source used` tag (also recorded as `agenticSource` in the
+JSON report). The tag reflects the agent's own report of needing extra context —
+not merely that the flag was enabled.
 
 ## Development
 
@@ -246,14 +286,12 @@ internal/report            JSON report model + writer
     `--agent-bin` at a wrapper.
 - **Source paths**: node `fileName` values are treated as repo-root-relative to the
   resolved repo root (`--repo-path`, or the temp dir a Bitbucket URL was cloned
-  into). Files that don't resolve are reported (not fatal) and the affected nodes
-  are sent to the agent marked as unavailable. Pipeline-triggered scans sometimes
-  nest the checkout under extra directories in Checkmarx (e.g. `/something/sast/<repo>/...`)
-  that a manual scan or local checkout doesn't have; set `--strip-path-prefix`
-  (or `$CX_STRIP_PATH_PREFIX`) to that leading prefix and it's stripped from every
-  result path before resolution. If a finding still has zero resolved nodes, a
-  `WARN no source snippets resolved for finding` line is printed with the
-  finding's raw file path — check that against `--repo-path`/`--strip-path-prefix`.
+  into), after stripping `--strip-path-prefix` — see
+  [`--repo-path` and `--strip-path-prefix`](#--repo-path-and---strip-path-prefix)
+  for exactly how the two combine. Files that don't resolve are reported (not
+  fatal) and the affected nodes are sent to the agent marked as unavailable; if a
+  finding ends up with zero resolved nodes, a `WARN no source snippets resolved
+  for finding` line is printed with the finding's raw file path.
 - **Cost accounting** is per-agent: the `claude` CLI reports its own cost in its JSON
   envelope; the `anthropic` agent computes cost from token usage; `copilot` reports
   no cost, so `--cost-limit` has no effect when using it.
