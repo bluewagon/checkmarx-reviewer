@@ -45,6 +45,9 @@ type Verdict struct {
 	Verdict     string  `json:"verdict"`     // TRUE_POSITIVE or FALSE_POSITIVE
 	Confidence  float64 `json:"confidence"`  // 0..1
 	Explanation string  `json:"explanation"` // human-readable rationale
+	// AgenticSource reports whether the agent needed to explore the repo beyond
+	// the inlined snippets to decide. Only ever true in agentic mode.
+	AgenticSource bool `json:"agentic_source"`
 }
 
 // IsFalsePositive reports whether the verdict is a false positive.

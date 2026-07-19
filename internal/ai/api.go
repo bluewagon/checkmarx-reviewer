@@ -111,8 +111,9 @@ func (r *APIReviewer) Review(ctx context.Context, findings []Finding) (map[strin
 	var text string
 	var usage Usage
 	var err error
+	toolsUsed := false
 	if r.agentic {
-		text, usage, err = r.reviewAgentic(ctx, prompt)
+		text, usage, toolsUsed, err = r.reviewAgentic(ctx, prompt)
 	} else {
 		text, usage, err = r.reviewOnce(ctx, prompt)
 	}
@@ -136,7 +137,16 @@ func (r *APIReviewer) Review(ctx context.Context, findings []Finding) (map[strin
 			"outputLen", len(text), "output", strings.TrimSpace(text))
 		return nil, usage, fmt.Errorf("%s: %w; output was: %s", AgentAnthropic, err, truncate(text, 500))
 	}
-	return mapVerdicts(findings, verdicts), usage, nil
+	out := mapVerdicts(findings, verdicts)
+	if !toolsUsed {
+		// The model never invoked a repo tool, so no verdict can rest on
+		// exploration regardless of what it self-reported.
+		for id, v := range out {
+			v.AgenticSource = false
+			out[id] = v
+		}
+	}
+	return out, usage, nil
 }
 
 // reviewOnce performs a single non-agentic Messages call.
@@ -167,11 +177,12 @@ func (r *APIReviewer) reviewOnce(ctx context.Context, prompt string) (string, Us
 
 // reviewAgentic runs the beta tool-use loop with read-only repo tools, letting
 // the model explore the checkout before answering. Usage is accumulated across
-// every iteration of the loop.
-func (r *APIReviewer) reviewAgentic(ctx context.Context, prompt string) (string, Usage, error) {
+// every iteration of the loop. toolsUsed reports whether the model invoked any
+// repo tool (more than one loop iteration).
+func (r *APIReviewer) reviewAgentic(ctx context.Context, prompt string) (text string, usage Usage, toolsUsed bool, err error) {
 	tools, err := repoTools(r.workDir)
 	if err != nil {
-		return "", Usage{}, fmt.Errorf("building repo tools: %w", err)
+		return "", Usage{}, false, fmt.Errorf("building repo tools: %w", err)
 	}
 
 	adaptive := anthropic.BetaThinkingConfigAdaptiveParam{}
@@ -187,12 +198,11 @@ func (r *APIReviewer) reviewAgentic(ctx context.Context, prompt string) (string,
 		MaxIterations: apiMaxIterations,
 	})
 
-	var usage Usage
 	var last *anthropic.BetaMessage
 	iterations := 0
 	for message, err := range runner.All(ctx) {
 		if err != nil {
-			return "", usage, err
+			return "", usage, iterations > 1, err
 		}
 		if message == last {
 			continue // the runner re-yields the final message on completion
@@ -203,7 +213,7 @@ func (r *APIReviewer) reviewAgentic(ctx context.Context, prompt string) (string,
 		last = message
 	}
 	if last == nil {
-		return "", usage, fmt.Errorf("tool runner returned no message")
+		return "", usage, false, fmt.Errorf("tool runner returned no message")
 	}
 	r.log.Debug("agentic loop finished", "iterations", iterations,
 		"stopReason", string(last.StopReason))
@@ -214,7 +224,7 @@ func (r *APIReviewer) reviewAgentic(ctx context.Context, prompt string) (string,
 			b.WriteString(t.Text)
 		}
 	}
-	return b.String(), usage, nil
+	return b.String(), usage, iterations > 1, nil
 }
 
 // usageFrom converts raw token counts into Usage with the cost computed from

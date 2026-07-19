@@ -43,6 +43,21 @@ func TestExtractVerdictsFallbackToObjects(t *testing.T) {
 	}
 }
 
+func TestExtractVerdictsCarriesAgenticSource(t *testing.T) {
+	vs, err := extractVerdicts(`[{"id":"a","verdict":"TRUE_POSITIVE","confidence":0.8,"explanation":"x","agentic_source":true},{"id":"b","verdict":"FALSE_POSITIVE","confidence":0.5,"explanation":"y"}]`)
+	if err != nil {
+		t.Fatalf("extractVerdicts: %v", err)
+	}
+	if len(vs) != 2 || !vs[0].AgenticSource || vs[1].AgenticSource {
+		t.Errorf("got %+v", vs)
+	}
+	// The flag survives normalization/mapping.
+	m := mapVerdicts(findings("a", "b"), vs)
+	if !m["a"].AgenticSource || m["b"].AgenticSource {
+		t.Errorf("mapped verdicts lost agentic_source: %+v", m)
+	}
+}
+
 func TestExtractVerdictsNone(t *testing.T) {
 	if _, err := extractVerdicts("I cannot help with that."); err == nil {
 		t.Fatal("expected error when no verdict present")

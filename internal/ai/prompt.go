@@ -73,6 +73,19 @@ Each explanation must stand entirely on its own: it is posted to that finding in
 never reference, compare to, or mention other findings in the batch (no phrasing like "like the
 other findings" or "as with finding X").`
 
+// agenticPromptInstruction is the agentic-mode variant: the verdict object gains
+// an "agentic_source" flag reporting whether repo exploration was needed.
+const agenticPromptInstruction = `Respond with ONLY a single JSON array and nothing else — no prose, no markdown, no code fences.
+Return exactly one object per finding (%d in total), each keyed by the finding's id:
+[{"id": "<finding id>", "verdict": "TRUE_POSITIVE" | "FALSE_POSITIVE", "confidence": <number between 0 and 1>, "explanation": "<concise justification grounded in the shown code, 2-5 sentences>", "agentic_source": <true | false>}]
+Include every id exactly once.
+Set "agentic_source" to true for a finding only if you needed to open or search repository files
+beyond the inlined snippets to reach that verdict; set it to false if the inlined snippets alone
+were sufficient.
+Each explanation must stand entirely on its own: it is posted to that finding individually, so
+never reference, compare to, or mention other findings in the batch (no phrasing like "like the
+other findings" or "as with finding X").`
+
 // buildBatchPrompt renders a prompt covering all findings. By default the agent
 // has no tools and all evidence is inlined; when agentic is true the agent is told
 // it may read/search the repo checkout at its working directory for more context.
@@ -93,7 +106,11 @@ func buildBatchPrompt(findings []Finding, agentic bool) string {
 	}
 
 	b.WriteString("\n")
-	fmt.Fprintf(&b, promptInstruction, len(findings))
+	instruction := promptInstruction
+	if agentic {
+		instruction = agenticPromptInstruction
+	}
+	fmt.Fprintf(&b, instruction, len(findings))
 	return b.String()
 }
 

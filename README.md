@@ -191,8 +191,13 @@ gitignored.
 [AI-REVIEW] FALSE POSITIVE — confidence 92%
 <explanation>
 —
-via=claude (claude-opus-4-8) · reviewed 2026-07-08 · checkmarx-reviewer
+reviewed 2026-07-08 · checkmarx-reviewer
 ```
+
+With `--agentic-source`, the agent reports per finding whether it actually needed
+to explore the repo beyond the inlined snippets to decide; when it did, the footer
+gains a ` · repo exploration used` tag (also recorded as `agenticSource` in the
+JSON report).
 
 ## Development
 

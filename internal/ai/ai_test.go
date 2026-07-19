@@ -81,9 +81,17 @@ func TestBuildBatchPromptAgenticInvitesRepoAccess(t *testing.T) {
 			t.Errorf("agentic prompt should still include snippet/metadata %q", want)
 		}
 	}
-	// The non-agentic prompt must NOT claim repo access.
-	if plain := buildBatchPrompt([]Finding{f}, false); strings.Contains(plain, "read-only tools") {
+	// ...and asks the agent to report whether exploration was needed.
+	if !strings.Contains(agentic, `"agentic_source"`) {
+		t.Errorf("agentic prompt should ask for agentic_source:\n%s", agentic)
+	}
+	// The non-agentic prompt must NOT claim repo access or ask for agentic_source.
+	plain := buildBatchPrompt([]Finding{f}, false)
+	if strings.Contains(plain, "read-only tools") {
 		t.Errorf("non-agentic prompt should not mention repo tools:\n%s", plain)
+	}
+	if strings.Contains(plain, "agentic_source") {
+		t.Errorf("non-agentic prompt should not ask for agentic_source:\n%s", plain)
 	}
 }
 

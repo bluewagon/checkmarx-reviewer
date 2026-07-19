@@ -107,7 +107,7 @@ func TestAPIAgenticToolRoundTrip(t *testing.T) {
 		default:
 			secondBody = string(b)
 			writeJSONResp(w, messageEnvelope(
-				`[{"id":"sim-1","verdict":"TRUE_POSITIVE","confidence":0.9,"explanation":"unescaped param reaches JSP output"}]`,
+				`[{"id":"sim-1","verdict":"TRUE_POSITIVE","confidence":0.9,"explanation":"unescaped param reaches JSP output","agentic_source":true}]`,
 				"end_turn"))
 		}
 	}
@@ -129,9 +129,32 @@ func TestAPIAgenticToolRoundTrip(t *testing.T) {
 	if got["sim-1"].Verdict != VerdictTruePositive {
 		t.Errorf("verdict = %+v", got)
 	}
+	// Tools were used, so the self-reported agentic_source flag stands.
+	if !got["sim-1"].AgenticSource {
+		t.Errorf("agentic_source should be preserved when tools were used: %+v", got["sim-1"])
+	}
 	// Usage accumulates across both loop iterations.
 	if usage.InputTokens != 2000 || usage.OutputTokens != 200 {
 		t.Errorf("usage should sum across iterations: %+v", usage)
+	}
+}
+
+func TestAPIAgenticNoToolUseClearsAgenticSource(t *testing.T) {
+	// The model answers immediately without invoking any repo tool but still
+	// self-reports agentic_source; the mechanical cross-check must clear it.
+	handler := func(w http.ResponseWriter, _ *http.Request) {
+		writeJSONResp(w, messageEnvelope(
+			`[{"id":"sim-1","verdict":"FALSE_POSITIVE","confidence":0.95,"explanation":"validated","agentic_source":true}]`,
+			"end_turn"))
+	}
+	r := newAPIReviewerForTest(t, handler, true, t.TempDir())
+
+	got, _, err := r.Review(context.Background(), findings("sim-1"))
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if got["sim-1"].AgenticSource {
+		t.Errorf("agentic_source should be cleared when no tool was invoked: %+v", got["sim-1"])
 	}
 }
 

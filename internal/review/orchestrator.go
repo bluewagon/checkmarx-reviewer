@@ -534,6 +534,7 @@ func (o *Orchestrator) applyVerdict(ctx context.Context, it *item) {
 		it.fr.Verdict = it.verdict.Verdict
 		it.fr.Confidence = it.verdict.Confidence
 		it.fr.Explanation = it.verdict.Explanation
+		it.fr.AgenticSource = it.verdict.AgenticSource
 		it.fr.Action = report.ActionSkippedCancelled
 		return
 	}
@@ -542,6 +543,7 @@ func (o *Orchestrator) applyVerdict(ctx context.Context, it *item) {
 	it.fr.Verdict = v.Verdict
 	it.fr.Confidence = v.Confidence
 	it.fr.Explanation = v.Explanation
+	it.fr.AgenticSource = v.AgenticSource
 
 	state := checkmarx.StateToVerify
 	it.fr.Action = report.ActionCommented
@@ -678,12 +680,17 @@ func formatComment(v ai.Verdict) string {
 	if v.IsFalsePositive() {
 		label = "FALSE POSITIVE"
 	}
-	return fmt.Sprintf("%s %s — confidence %d%%\n%s\n—\nreviewed %s · checkmarx-reviewer",
+	footer := "checkmarx-reviewer"
+	if v.AgenticSource {
+		footer += " · repo exploration used"
+	}
+	return fmt.Sprintf("%s %s — confidence %d%%\n%s\n—\nreviewed %s · %s",
 		commentMarker,
 		label,
 		int(v.Confidence*100+0.5),
 		strings.TrimSpace(v.Explanation),
 		time.Now().UTC().Format("2006-01-02"),
+		footer,
 	)
 }
 

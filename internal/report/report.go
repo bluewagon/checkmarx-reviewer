@@ -34,6 +34,7 @@ type FindingResult struct {
 	Verdict       string  `json:"verdict,omitempty"`
 	Confidence    float64 `json:"confidence,omitempty"`
 	Explanation   string  `json:"explanation,omitempty"`
+	AgenticSource bool    `json:"agenticSource,omitempty"` // repo exploration was needed for the verdict
 	Action        string  `json:"action"`
 	StateSet      string  `json:"stateSet,omitempty"`
 	NodesTotal    int     `json:"nodesTotal"`

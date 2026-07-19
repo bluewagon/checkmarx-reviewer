@@ -162,6 +162,37 @@ func TestHighConfidenceFPSetsProposedNotExploitable(t *testing.T) {
 	}
 }
 
+func TestAgenticSourceNotedInCommentAndReport(t *testing.T) {
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{result(1)}}
+	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictFalsePositive, Confidence: 0.95, Explanation: "sanitized", AgenticSource: true}, 0.90, false)
+
+	rep := run(t, o)
+
+	if !strings.Contains(cx.posts[0].comment, "repo exploration used") {
+		t.Errorf("comment should note repo exploration: %q", cx.posts[0].comment)
+	}
+	if !rep.Findings[0].AgenticSource {
+		t.Errorf("report should record agentic source: %+v", rep.Findings[0])
+	}
+}
+
+func TestNoAgenticSourceLeavesCommentUnchanged(t *testing.T) {
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{result(1)}}
+	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictFalsePositive, Confidence: 0.95, Explanation: "sanitized"}, 0.90, false)
+
+	rep := run(t, o)
+
+	if strings.Contains(cx.posts[0].comment, "repo exploration") {
+		t.Errorf("comment should not mention repo exploration: %q", cx.posts[0].comment)
+	}
+	if !strings.HasSuffix(cx.posts[0].comment, "checkmarx-reviewer") {
+		t.Errorf("footer should end with the tool name: %q", cx.posts[0].comment)
+	}
+	if rep.Findings[0].AgenticSource {
+		t.Errorf("report should not record agentic source: %+v", rep.Findings[0])
+	}
+}
+
 func TestLowConfidenceFPCommentsOnly(t *testing.T) {
 	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{result(1)}}
 	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictFalsePositive, Confidence: 0.80, Explanation: "unsure"}, 0.90, false)
