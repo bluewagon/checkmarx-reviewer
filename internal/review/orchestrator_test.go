@@ -314,7 +314,12 @@ func TestLimitWithReTriagePrefersFreshFindings(t *testing.T) {
 
 func TestDryRunWritesNothing(t *testing.T) {
 	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{result(1)}}
-	o := newOrch(t, cx, ai.Verdict{Verdict: ai.VerdictFalsePositive, Confidence: 0.99, Explanation: "x"}, 0.90, true)
+	var logs bytes.Buffer
+	o := New(cx, &fakeReviewer{v: ai.Verdict{Verdict: ai.VerdictFalsePositive, Confidence: 0.99, Explanation: "x"}},
+		source.NewReader(t.TempDir(), 2), Options{
+			ScanID: "scan-1", Severities: []string{checkmarx.SeverityHigh}, Model: "claude-test",
+			BatchSize: 10, FPThreshold: 0.90, DryRun: true,
+		}, slog.New(slog.NewTextHandler(&logs, nil)))
 
 	rep := run(t, o)
 
@@ -324,6 +329,12 @@ func TestDryRunWritesNothing(t *testing.T) {
 	// The intended action is still recorded.
 	if rep.Findings[0].Action != report.ActionProposedNotExploit || rep.Findings[0].CommentPosted {
 		t.Errorf("dry-run finding record wrong: %+v", rep.Findings[0])
+	}
+	// The would-be predicate is printed to the console.
+	for _, want := range []string{"would post predicate", "similarityId=1", "state=" + checkmarx.StateProposedNotExploitable, commentMarker} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("dry-run log missing %q in:\n%s", want, logs.String())
+		}
 	}
 }
 

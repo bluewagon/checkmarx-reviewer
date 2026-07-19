@@ -543,6 +543,13 @@ func (o *Orchestrator) applyVerdict(ctx context.Context, it *item) {
 	comment := formatComment(v)
 
 	if o.opts.DryRun {
+		o.log.Info("dry run: would post predicate",
+			"similarityId", it.res.SimilarityID.String(),
+			"projectId", it.projectID,
+			"query", it.fr.QueryName,
+			"severity", it.res.Severity,
+			"state", state,
+			"comment", comment)
 		return
 	}
 
