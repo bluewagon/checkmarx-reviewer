@@ -85,13 +85,15 @@ Checkmarx connection settings come from the environment (see [.env.example](.env
 | `CX_AI_AGENTIC_SOURCE` | no | Default `--agentic-source` |
 | `CX_VERBOSE` | no | Default `--verbose` |
 | `CX_LOG_DIR` | no | Default `--log-dir` |
+| `CX_STRIP_PATH_PREFIX` | no | Default `--strip-path-prefix` |
 
 ## Usage
 
 ```bash
 go build -o checkmarx-reviewer .
 
-# Preview only — computes verdicts and intended actions, writes the report,
+# Preview only — computes verdicts and intended actions, prints each would-be
+# Checkmarx predicate (state + comment) to the console, and writes the report,
 # but makes NO changes in Checkmarx (default agent: claude):
 ./checkmarx-reviewer \
   --scan-id 1a2b3c4d-... \
@@ -131,6 +133,7 @@ go build -o checkmarx-reviewer .
 | `--limit` | `0` (no limit) | Maximum findings to review this run; new findings are selected before re-triaged ones. The `similarityId` of each reviewed finding is printed at the end |
 | `--agentic-source` | `false` | Let the agent read/search the repo for extra context instead of only the inlined snippets (uses more time per finding) |
 | `--context-lines` | `8` | Source lines of context around each data-flow node |
+| `--strip-path-prefix` | `""` | Leading directory prefix to strip from Checkmarx result file paths so they match `--repo-path`, e.g. `/something/sast` if pipeline scans report `/something/sast/<repo>/...` but `--repo-path` is just the repo checkout |
 | `--report` | `checkmarx-ai-review.json` | Output report path |
 | `--dry-run` | `false` | Compute everything, write nothing to Checkmarx |
 | `--bitbucket-token` | `$CX_BITBUCKET_TOKEN` | Bitbucket HTTP access token, required when `--repo-path` is a URL |
@@ -239,7 +242,13 @@ internal/report            JSON report model + writer
 - **Source paths**: node `fileName` values are treated as repo-root-relative to the
   resolved repo root (`--repo-path`, or the temp dir a Bitbucket URL was cloned
   into). Files that don't resolve are reported (not fatal) and the affected nodes
-  are sent to the agent marked as unavailable.
+  are sent to the agent marked as unavailable. Pipeline-triggered scans sometimes
+  nest the checkout under extra directories in Checkmarx (e.g. `/something/sast/<repo>/...`)
+  that a manual scan or local checkout doesn't have; set `--strip-path-prefix`
+  (or `$CX_STRIP_PATH_PREFIX`) to that leading prefix and it's stripped from every
+  result path before resolution. If a finding still has zero resolved nodes, a
+  `WARN no source snippets resolved for finding` line is printed with the
+  finding's raw file path — check that against `--repo-path`/`--strip-path-prefix`.
 - **Cost accounting** is per-agent: the `claude` CLI reports its own cost in its JSON
   envelope; the `anthropic` agent computes cost from token usage; `copilot` reports
   no cost, so `--cost-limit` has no effect when using it.
