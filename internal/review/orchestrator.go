@@ -210,10 +210,18 @@ func (o *Orchestrator) Run(ctx context.Context) (*report.Report, error) {
 	// Phase 3: post verdicts (concurrently — each touches only its own item), then
 	// assemble the report sequentially in original order so counters/order are
 	// deterministic.
+	posts := 0
+	for _, it := range items {
+		if !it.terminal && it.hasVerdict {
+			posts++
+		}
+	}
+	prog := newProgress(o.log, "posting comments", posts)
 	runConcurrent(n, len(items), func(i int) {
 		it := items[i]
 		if !it.terminal && it.hasVerdict {
 			o.applyVerdict(ctx, it)
+			prog.record(it.fr.Action == report.ActionError)
 		}
 	})
 	for _, it := range items {
@@ -354,6 +362,8 @@ func (o *Orchestrator) reviewBatches(ctx context.Context, items []*item, n int) 
 		chunks = append(chunks, chunk{start, min(start+size, len(pending))})
 	}
 
+	prog := newProgress(o.log, "reviewing batches", len(chunks))
+
 	sem := make(chan struct{}, max(n, 1))
 	var wg sync.WaitGroup
 	aborted := false
@@ -385,9 +395,10 @@ func (o *Orchestrator) reviewBatches(ctx context.Context, items []*item, n int) 
 		go func(batchNum, start, end int) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			o.log.Info("reviewing batch", "batch", batchNum, "size", end-start,
+			o.log.Debug("reviewing batch", "batch", batchNum, "size", end-start,
 				"query", pending[start].finding.QueryName)
 			o.reviewBatch(ctx, pending[start:end])
+			prog.record(false)
 		}(i+1, ch.start, ch.end)
 	}
 	wg.Wait()
@@ -545,11 +556,9 @@ func (o *Orchestrator) applyVerdict(ctx context.Context, it *item) {
 	it.fr.Explanation = v.Explanation
 	it.fr.AgenticSource = v.AgenticSource
 
-	state := checkmarx.StateToVerify
-	it.fr.Action = report.ActionCommented
-	if v.IsFalsePositive() && v.Confidence >= o.opts.FPThreshold {
-		state = checkmarx.StateProposedNotExploitable
-		it.fr.Action = report.ActionProposedNotExploit
+	state, action := decideState(v, o.opts.FPThreshold)
+	it.fr.Action = action
+	if state == checkmarx.StateProposedNotExploitable {
 		it.fr.StateSet = state
 	}
 
@@ -672,6 +681,17 @@ func alreadyReviewed(history []checkmarx.Predicate) bool {
 		}
 	}
 	return false
+}
+
+// decideState maps a verdict to the Checkmarx target state and the report action
+// for it: high-confidence false positives (confidence >= fpThreshold) are proposed
+// Not Exploitable; everything else keeps the current TO_VERIFY state and is recorded
+// as a plain comment.
+func decideState(v ai.Verdict, fpThreshold float64) (state, action string) {
+	if v.IsFalsePositive() && v.Confidence >= fpThreshold {
+		return checkmarx.StateProposedNotExploitable, report.ActionProposedNotExploit
+	}
+	return checkmarx.StateToVerify, report.ActionCommented
 }
 
 // formatComment renders the comment posted to Checkmarx.

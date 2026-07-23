@@ -136,6 +136,73 @@ func Load(args []string) (*Config, error) {
 	return cfg, nil
 }
 
+// ResumeConfig holds the settings for a `resume` run, which re-posts predicates
+// from an existing report and needs only the Checkmarx connection plus the report.
+type ResumeConfig struct {
+	// Checkmarx connection (from environment).
+	APIKey  string // CX_APIKEY
+	BaseURI string // CX_BASE_URI
+	Tenant  string // CX_TENANT
+
+	ReportIn    string // report to read failed/cancelled findings from
+	ReportOut   string // report to write updated results to (defaults to ReportIn)
+	Concurrency int    // max predicate posts in parallel (1 = sequential)
+	DryRun      bool   // show intended posts without writing to Checkmarx
+	Verbose     bool
+	LogDir      string // per-run JSONL debug logs and raw API dumps ("off" disables)
+}
+
+// LoadResume parses the flags for the `resume` subcommand (args excluding the
+// program name and the "resume" token) and reads the required Checkmarx
+// environment variables, returning a validated ResumeConfig.
+func LoadResume(args []string) (*ResumeConfig, error) {
+	_ = godotenv.Load()
+	fs := flag.NewFlagSet("checkmarx-reviewer resume", flag.ContinueOnError)
+
+	cfg := &ResumeConfig{}
+	fs.StringVar(&cfg.ReportIn, "report", DefaultReportPath, "Path to the JSON report to resume posting from")
+	fs.StringVar(&cfg.ReportOut, "report-out", "", "Path to write the updated report to (default: overwrite --report)")
+	fs.IntVar(&cfg.Concurrency, "concurrency", envIntOr("CX_CONCURRENCY", DefaultConcurrency), "Max predicate posts in parallel (>=1); 1 = fully sequential")
+	fs.BoolVar(&cfg.DryRun, "dry-run", false, "Show which predicates would be re-posted without writing to Checkmarx")
+	fs.BoolVar(&cfg.Verbose, "verbose", envBoolOr("CX_VERBOSE", false), "Enable debug logging (HTTP requests, full error causes)")
+	fs.StringVar(&cfg.LogDir, "log-dir", envOr("CX_LOG_DIR", DefaultLogDir), "Directory for per-run JSONL debug logs and raw API dumps (\"off\" disables)")
+
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+
+	if cfg.ReportOut == "" {
+		cfg.ReportOut = cfg.ReportIn
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.LogDir), "off") {
+		cfg.LogDir = ""
+	}
+	cfg.APIKey = os.Getenv("CX_APIKEY")
+	cfg.BaseURI = strings.TrimRight(os.Getenv("CX_BASE_URI"), "/")
+	cfg.Tenant = os.Getenv("CX_TENANT")
+
+	var missing []string
+	if cfg.ReportIn == "" {
+		missing = append(missing, "--report")
+	}
+	if cfg.APIKey == "" {
+		missing = append(missing, "CX_APIKEY")
+	}
+	if cfg.BaseURI == "" {
+		missing = append(missing, "CX_BASE_URI")
+	}
+	if cfg.Tenant == "" {
+		missing = append(missing, "CX_TENANT")
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("missing required configuration: %s", strings.Join(missing, ", "))
+	}
+	if cfg.Concurrency < 1 {
+		return nil, errors.New("--concurrency must be >= 1")
+	}
+	return cfg, nil
+}
+
 func (c *Config) validate() error {
 	var missing []string
 	if c.ScanID == "" {

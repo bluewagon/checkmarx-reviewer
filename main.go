@@ -29,6 +29,10 @@ func main() {
 }
 
 func run(args []string) error {
+	if len(args) > 0 && args[0] == "resume" {
+		return runResume(args[1:])
+	}
+
 	cfg, err := config.Load(args)
 	if err != nil {
 		return err
@@ -139,6 +143,69 @@ func run(args []string) error {
 	// Non-zero exit if any finding failed, so pipelines can detect problems.
 	if rep.Errors > 0 {
 		return fmt.Errorf("%d finding(s) failed during review", rep.Errors)
+	}
+	return nil
+}
+
+// runResume re-posts predicates for findings that were verdicted but never posted
+// (post failures, or a run cancelled mid-posting), reading them from an existing
+// report and rebuilding each comment/state — no AI calls or scan listing.
+func runResume(args []string) error {
+	cfg, err := config.LoadResume(args)
+	if err != nil {
+		return err
+	}
+
+	rep, err := report.ReadJSON(cfg.ReportIn)
+	if err != nil {
+		return fmt.Errorf("reading report %q: %w", cfg.ReportIn, err)
+	}
+
+	logger, runLog, err := logging.NewRun(cfg.LogDir, rep.ScanID, cfg.Verbose)
+	if err != nil {
+		return fmt.Errorf("setting up logging: %w", err)
+	}
+	defer runLog.Close()
+	if runLog != nil {
+		logger.Info("file logging enabled", "dir", runLog.Dir())
+	}
+	logger.Info("resume configuration", "report", cfg.ReportIn, "reportOut", cfg.ReportOut,
+		"scanId", rep.ScanID, "projectId", rep.ProjectID, "concurrency", cfg.Concurrency,
+		"dryRun", cfg.DryRun)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	cx := checkmarx.New(checkmarx.Options{
+		BaseURI: cfg.BaseURI,
+		Tenant:  cfg.Tenant,
+		APIKey:  cfg.APIKey,
+		Logger:  logger,
+		Dump:    runLog.Dump,
+	})
+
+	if cfg.DryRun {
+		logger.Info("dry run: no comments or state changes will be written to Checkmarx")
+	}
+
+	summary := review.Resume(ctx, cx, rep, review.ResumeOptions{
+		Concurrency: cfg.Concurrency,
+		DryRun:      cfg.DryRun,
+	}, logger)
+
+	if !cfg.DryRun {
+		if err := report.WriteJSON(cfg.ReportOut, rep); err != nil {
+			return fmt.Errorf("writing report: %w", err)
+		}
+	}
+
+	logger.Info("resume done", "candidates", summary.Candidates, "reposted", summary.Reposted,
+		"failed", summary.Failed, "noVerdictSkipped", summary.NoVerdictSkipped,
+		"report", cfg.ReportOut, "dryRun", cfg.DryRun)
+
+	// Non-zero exit if any predicate still failed to post, so pipelines notice.
+	if summary.Failed > 0 {
+		return fmt.Errorf("%d predicate(s) still failed to post", summary.Failed)
 	}
 	return nil
 }

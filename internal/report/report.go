@@ -87,3 +87,16 @@ func WriteJSON(path string, r *Report) error {
 	}
 	return os.WriteFile(path, append(data, '\n'), 0o644)
 }
+
+// ReadJSON reads a report previously written by WriteJSON from path.
+func ReadJSON(path string) (*Report, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var r Report
+	if err := json.Unmarshal(data, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}

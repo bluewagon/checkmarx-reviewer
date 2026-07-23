@@ -114,6 +114,40 @@ go build -o checkmarx-reviewer .
   --repo-path https://bitbucket.example.com/projects/PROJ/repos/repo/browse
 ```
 
+### `resume` — finish posting after a failed or cancelled run
+
+A run writes its verdict for every finding into the report *before* posting it to
+Checkmarx. If the run is cancelled while posting, or an individual post errors out,
+those verdicts are still in the report — they just never reached Checkmarx. The
+`resume` subcommand re-posts them directly from the report, **with no AI calls and
+no scan listing** (so it costs nothing and is fast):
+
+```bash
+# Preview which predicates would be re-posted (no changes in Checkmarx):
+./checkmarx-reviewer resume --report checkmarx-ai-review.json --dry-run
+
+# Re-post them and overwrite the report in place with the updated results:
+./checkmarx-reviewer resume --report checkmarx-ai-review.json
+```
+
+It retries a finding only when the report shows it holds a verdict but was never
+posted — i.e. `action` is `ERROR` with a `posting predicate: …` error, **or**
+`SKIPPED_CANCELLED` (a verdict computed before the run was cancelled). For each, it
+rebuilds the same state (`PROPOSED_NOT_EXPLOITABLE` for a high-confidence false
+positive, otherwise a plain `TO_VERIFY` comment) and comment the original run would
+have posted, then updates that finding to `COMMENTED`/`PROPOSED_NOT_EXPLOITABLE`
+with `commentPosted: true` and re-tallies the report's summary counters. Findings
+with no verdict (e.g. the AI review itself failed, or the run was cancelled before
+review) are **not** resumable this way — re-run the full review for those; it skips
+already-posted findings via the `[AI-REVIEW]` marker. Re-running `resume` is safe:
+each pass only retries what is still unposted.
+
+`resume` needs only the Checkmarx environment variables (`CX_APIKEY`,
+`CX_BASE_URI`, `CX_TENANT`) and the report — no `--scan-id`, `--repo-path`, or
+agent. Its flags: `--report` (in, default `checkmarx-ai-review.json`),
+`--report-out` (default: overwrite `--report`), `--concurrency`, `--dry-run`,
+`--verbose`, `--log-dir`. It exits non-zero if any predicate still fails to post.
+
 ### `--repo-path` and `--strip-path-prefix`
 
 Checkmarx reports each data-flow node's file as an absolute-looking path (`fileName`
