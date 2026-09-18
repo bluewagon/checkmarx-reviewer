@@ -314,8 +314,10 @@ internal/report            JSON report model + writer
   - `claude` (`internal/ai/cli.go`) is run as `claude -p --output-format json
     [--model M]` with the prompt on stdin; the JSON envelope's `result` field is
     unwrapped.
-  - `copilot` (`internal/ai/cli.go`) is run as `copilot [--model M] --allow-all-tools
-    -p "<prompt>"`.
+  - `copilot` (`internal/ai/cli.go`) is run as `copilot [--model M]
+    (--deny-tool … | --allow-all-tools --allow-all-paths) -s` with the prompt on
+    stdin (not `-p "<prompt>"`: on Windows the `copilot.cmd` shim cuts arguments
+    off at the first newline).
   - `anthropic` (`internal/ai/api.go`) calls the Anthropic API directly via the Go
     SDK — no subprocess. With `--agentic-source` it runs an agentic tool-use loop
     (bounded iterations) granting the model read-only `Read`/`Grep`/`Glob`/`LS` tools

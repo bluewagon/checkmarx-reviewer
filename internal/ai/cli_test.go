@@ -190,7 +190,7 @@ func TestAgenticClaudeSetsWorkDirAndTools(t *testing.T) {
 	}
 }
 
-func TestCopilotReviewSendsPromptAsArg(t *testing.T) {
+func TestCopilotReviewSendsPromptOnStdin(t *testing.T) {
 	cr := &captureRunner{stdout: "Thinking...\n[{\"id\":\"sim-1\",\"verdict\":\"TRUE_POSITIVE\",\"confidence\":0.7,\"explanation\":\"reaches sink\"}]\n"}
 	r := newReviewerForTest(AgentCopilot, cr.run)
 
@@ -201,11 +201,22 @@ func TestCopilotReviewSendsPromptAsArg(t *testing.T) {
 	if got["sim-1"].Verdict != VerdictTruePositive {
 		t.Errorf("verdict = %+v", got)
 	}
-	if cr.stdin != "" {
-		t.Error("copilot should not use stdin")
+	// The prompt must go on stdin: on Windows the copilot .cmd shim truncates
+	// argv at the first newline.
+	if !strings.Contains(cr.stdin, "id=sim-1") {
+		t.Errorf("copilot should receive the prompt on stdin, got %q", cr.stdin)
 	}
-	if len(cr.args) == 0 || !strings.Contains(cr.args[len(cr.args)-1], "id=sim-1") {
-		t.Errorf("copilot should receive prompt as final arg: %v", cr.args)
+	for _, a := range cr.args {
+		if strings.Contains(a, "id=sim-1") {
+			t.Errorf("prompt must not be passed as an arg: %v", cr.args)
+		}
+	}
+	// Piped input is ignored when -p is given.
+	if slices.Contains(cr.args, "-p") {
+		t.Errorf("copilot must not be given -p when the prompt is on stdin: %v", cr.args)
+	}
+	if !slices.Contains(cr.args, "-s") {
+		t.Errorf("copilot should run silent (-s): %v", cr.args)
 	}
 	// Non-agentic Copilot must not enable tools; it should deny them so it reasons
 	// only from the inlined snippets instead of attempting (and failing) searches.
@@ -214,10 +225,6 @@ func TestCopilotReviewSendsPromptAsArg(t *testing.T) {
 	}
 	if !slices.Contains(cr.args, "--deny-tool") {
 		t.Errorf("non-agentic copilot should deny tools: %v", cr.args)
-	}
-	// -p must remain immediately before the prompt (the final arg).
-	if pi := slices.Index(cr.args, "-p"); pi != len(cr.args)-2 {
-		t.Errorf("-p should immediately precede the prompt arg: %v", cr.args)
 	}
 }
 

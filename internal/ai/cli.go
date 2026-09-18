@@ -56,11 +56,14 @@ var agentSpecs = map[string]agentSpec{
 		},
 		extract: extractClaudeResult,
 	},
-	// copilot [--model M] (--deny-tool … | --allow-all-tools --allow-all-paths) -p "<prompt>"
+	// copilot [--model M] (--deny-tool … | --allow-all-tools --allow-all-paths) -s   (prompt on stdin)
+	// The prompt must not go in argv: on Windows `copilot` is an npm .cmd shim run
+	// via cmd.exe, which truncates arguments at the first newline and caps the
+	// command line at ~8 KB.
 	AgentCopilot: {
 		bin:            "copilot",
 		defaultModel:   "", // let Copilot use its configured default
-		promptViaStdin: false,
+		promptViaStdin: true,
 		args: func(model string, agentic bool) []string {
 			var a []string
 			if model != "" {
@@ -76,7 +79,8 @@ var agentSpecs = map[string]agentSpec{
 				// (and failing) file searches. Deny always wins in Copilot.
 				a = append(a, "--deny-tool", copilotNonAgenticDenyTools)
 			}
-			return append(a, "-p")
+			// -s (silent) keeps session metadata out of stdout so only the reply is parsed.
+			return append(a, "-s")
 		},
 		extract: func(b []byte) (string, Usage, bool) { return string(b), Usage{}, false },
 	},
