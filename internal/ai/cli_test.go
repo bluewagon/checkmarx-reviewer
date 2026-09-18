@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -190,9 +192,22 @@ func TestAgenticClaudeSetsWorkDirAndTools(t *testing.T) {
 	}
 }
 
-func TestCopilotReviewSendsPromptOnStdin(t *testing.T) {
+func TestCopilotReviewSendsPromptAsFile(t *testing.T) {
 	cr := &captureRunner{stdout: "Thinking...\n[{\"id\":\"sim-1\",\"verdict\":\"TRUE_POSITIVE\",\"confidence\":0.7,\"explanation\":\"reaches sink\"}]\n"}
-	r := newReviewerForTest(AgentCopilot, cr.run)
+	var promptFile, fileContents string
+	run := func(ctx context.Context, bin string, args []string, stdin []byte, dir string) ([]byte, []byte, error) {
+		// Read the referenced prompt file while it still exists.
+		if pi := slices.Index(args, "-p"); pi >= 0 && pi+1 < len(args) {
+			if _, rest, ok := strings.Cut(args[pi+1], "@"); ok {
+				promptFile = filepath.FromSlash(strings.Fields(rest)[0])
+				promptFile = strings.TrimSuffix(promptFile, ".")
+				b, _ := os.ReadFile(promptFile)
+				fileContents = string(b)
+			}
+		}
+		return cr.run(ctx, bin, args, stdin, dir)
+	}
+	r := newReviewerForTest(AgentCopilot, run)
 
 	got, _, err := r.Review(context.Background(), findings("sim-1"))
 	if err != nil {
@@ -201,22 +216,27 @@ func TestCopilotReviewSendsPromptOnStdin(t *testing.T) {
 	if got["sim-1"].Verdict != VerdictTruePositive {
 		t.Errorf("verdict = %+v", got)
 	}
-	// The prompt must go on stdin: on Windows the copilot .cmd shim truncates
-	// argv at the first newline.
-	if !strings.Contains(cr.stdin, "id=sim-1") {
-		t.Errorf("copilot should receive the prompt on stdin, got %q", cr.stdin)
+	// On Windows the copilot .cmd shim truncates argv at the first newline, so the
+	// prompt travels in a file referenced by a single-line -p.
+	if !strings.Contains(fileContents, "id=sim-1") {
+		t.Errorf("prompt file %q should contain the prompt, got %q", promptFile, fileContents)
+	}
+	if cr.stdin != "" {
+		t.Errorf("copilot should not use stdin, got %q", cr.stdin)
 	}
 	for _, a := range cr.args {
-		if strings.Contains(a, "id=sim-1") {
-			t.Errorf("prompt must not be passed as an arg: %v", cr.args)
+		if strings.ContainsAny(a, "\r\n") {
+			t.Errorf("no arg may contain a newline: %q", a)
 		}
 	}
-	// Piped input is ignored when -p is given.
-	if slices.Contains(cr.args, "-p") {
-		t.Errorf("copilot must not be given -p when the prompt is on stdin: %v", cr.args)
+	if ai := slices.Index(cr.args, "--add-dir"); ai < 0 || ai+1 >= len(cr.args) || cr.args[ai+1] != filepath.Dir(promptFile) {
+		t.Errorf("copilot should trust the prompt dir via --add-dir: %v", cr.args)
 	}
 	if !slices.Contains(cr.args, "-s") {
 		t.Errorf("copilot should run silent (-s): %v", cr.args)
+	}
+	if _, err := os.Stat(filepath.Dir(promptFile)); !os.IsNotExist(err) {
+		t.Errorf("prompt dir should be removed after Review, stat err = %v", err)
 	}
 	// Non-agentic Copilot must not enable tools; it should deny them so it reasons
 	// only from the inlined snippets instead of attempting (and failing) searches.
@@ -243,6 +263,9 @@ func TestAgenticCopilotAllowsTools(t *testing.T) {
 	}
 	if slices.Contains(cr.args, "--deny-tool") {
 		t.Errorf("agentic copilot should not deny tools: %v", cr.args)
+	}
+	if !slices.Contains(cr.args, "--add-dir") {
+		t.Errorf("agentic copilot should trust the prompt dir outside the repo: %v", cr.args)
 	}
 }
 

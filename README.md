@@ -315,9 +315,12 @@ internal/report            JSON report model + writer
     [--model M]` with the prompt on stdin; the JSON envelope's `result` field is
     unwrapped.
   - `copilot` (`internal/ai/cli.go`) is run as `copilot [--model M]
-    (--deny-tool … | --allow-all-tools --allow-all-paths) -s` with the prompt on
-    stdin (not `-p "<prompt>"`: on Windows the `copilot.cmd` shim cuts arguments
-    off at the first newline).
+    (--deny-tool … | --allow-all-tools --allow-all-paths) -s --add-dir <tmp>
+    -p "Follow the instructions in @<tmp>/prompt.md …"`. The prompt is written to a
+    temp file rather than passed inline, because on Windows the `copilot.cmd` shim
+    cuts arguments off at the first newline and command lines are capped far below
+    a batch prompt's size. If your `%TEMP%` path contains spaces, point `TMP`/`TEMP`
+    at one that doesn't.
   - `anthropic` (`internal/ai/api.go`) calls the Anthropic API directly via the Go
     SDK — no subprocess. With `--agentic-source` it runs an agentic tool-use loop
     (bounded iterations) granting the model read-only `Read`/`Grep`/`Glob`/`LS` tools

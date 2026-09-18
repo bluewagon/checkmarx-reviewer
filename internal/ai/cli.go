@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -25,9 +27,9 @@ const DefaultAgentTimeout = 180 * time.Second
 
 // agentSpec describes how to drive one CLI agent in non-interactive mode.
 type agentSpec struct {
-	bin            string
-	defaultModel   string
-	promptViaStdin bool // pass the prompt on stdin vs. as the final arg
+	bin          string
+	defaultModel string
+	prompt       promptChannel // how the prompt reaches the agent
 	// args builds the CLI args for the given model. When agentic is true the agent
 	// is granted read-only repo tools (it runs with the repo as its working dir).
 	args func(model string, agentic bool) []string
@@ -37,12 +39,25 @@ type agentSpec struct {
 	extract func(stdout []byte) (string, Usage, bool)
 }
 
+// promptChannel is how a CLI agent receives its prompt.
+type promptChannel int
+
+const (
+	promptStdin promptChannel = iota // prompt written to the process's stdin
+	// promptFile writes the prompt to a temp file and passes a one-line `-p`
+	// referencing it as an @file mention.
+	promptFile
+)
+
+// promptFileName is the prompt file written for promptFile agents.
+const promptFileName = "prompt.md"
+
 var agentSpecs = map[string]agentSpec{
 	// claude -p --output-format json [--model M]   (prompt on stdin)
 	AgentClaude: {
-		bin:            "claude",
-		defaultModel:   "claude-opus-4-8",
-		promptViaStdin: true,
+		bin:          "claude",
+		defaultModel: "claude-opus-4-8",
+		prompt:       promptStdin,
 		args: func(model string, agentic bool) []string {
 			a := []string{"-p", "--output-format", "json"}
 			if model != "" {
@@ -56,14 +71,18 @@ var agentSpecs = map[string]agentSpec{
 		},
 		extract: extractClaudeResult,
 	},
-	// copilot [--model M] (--deny-tool … | --allow-all-tools --allow-all-paths) -s   (prompt on stdin)
-	// The prompt must not go in argv: on Windows `copilot` is an npm .cmd shim run
-	// via cmd.exe, which truncates arguments at the first newline and caps the
-	// command line at ~8 KB.
+	// copilot [--model M] (--deny-tool … | --allow-all-tools --allow-all-paths) -s
+	//         --add-dir <tmp> -p "Follow the instructions in @<tmp>/prompt.md …"
+	// The prompt can't go in argv: on Windows `copilot` is an npm .cmd shim run via
+	// cmd.exe, which truncates arguments at the first newline, and command lines
+	// are capped far below a batch prompt's size. Copilot doesn't reliably take a
+	// multi-line prompt on stdin either, so the prompt is written to a file and
+	// attached as an @file mention (inlined as context; no tool call needed).
+	// Caveat: a temp path containing spaces may not parse as an @ mention.
 	AgentCopilot: {
-		bin:            "copilot",
-		defaultModel:   "", // let Copilot use its configured default
-		promptViaStdin: true,
+		bin:          "copilot",
+		defaultModel: "", // let Copilot use its configured default
+		prompt:       promptFile,
 		args: func(model string, agentic bool) []string {
 			var a []string
 			if model != "" {
@@ -171,10 +190,23 @@ func (r *CLIReviewer) Review(ctx context.Context, findings []Finding) (map[strin
 
 	args := r.spec.args(r.model, r.agentic)
 	var stdin []byte
-	if r.spec.promptViaStdin {
+	promptPath := ""
+	switch r.spec.prompt {
+	case promptStdin:
 		stdin = []byte(prompt)
-	} else {
-		args = append(args, prompt)
+	case promptFile:
+		dir, err := os.MkdirTemp("", "cxreview-prompt-*")
+		if err != nil {
+			return nil, Usage{}, fmt.Errorf("%s: creating prompt dir: %w", r.agent, err)
+		}
+		defer os.RemoveAll(dir)
+		promptPath = filepath.Join(dir, promptFileName)
+		if err := os.WriteFile(promptPath, []byte(prompt), 0o600); err != nil {
+			return nil, Usage{}, fmt.Errorf("%s: writing prompt file: %w", r.agent, err)
+		}
+		args = append(args, "--add-dir", dir, "-p", fmt.Sprintf(
+			"Follow the instructions in @%s exactly. Reply with only the JSON array they request.",
+			filepath.ToSlash(promptPath)))
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
@@ -188,7 +220,7 @@ func (r *CLIReviewer) Review(ctx context.Context, findings []Finding) (map[strin
 	ids := findingIDs(findings)
 	r.log.Debug("agent invocation", "agent", r.agent, "model", r.model,
 		"batchSize", len(findings), "ids", ids, "workDir", dir,
-		"args", strings.Join(args, " "), "promptBytes", len(prompt),
+		"args", strings.Join(args, " "), "promptBytes", len(prompt), "promptFile", promptPath,
 		"promptDump", r.dumpArtifact("prompts", findings[0].ID+".txt", []byte(prompt)))
 
 	stdout, stderr, err := r.run(ctx, r.bin, args, stdin, dir)
