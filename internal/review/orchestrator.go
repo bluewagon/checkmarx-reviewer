@@ -138,6 +138,13 @@ func (o *Orchestrator) Run(ctx context.Context) (*report.Report, error) {
 	if stripped := stripPathPrefix(results, o.opts.StripPathPrefix); stripped > 0 {
 		o.log.Info("stripped path prefix from result file paths",
 			"prefix", o.opts.StripPathPrefix, "paths", stripped)
+	} else if o.opts.StripPathPrefix != "" && len(results) > 0 {
+		var example string
+		if len(results[0].Nodes) > 0 {
+			example = results[0].Nodes[0].FileName
+		}
+		o.log.Warn("strip-path-prefix matched no result file paths",
+			"prefix", o.opts.StripPathPrefix, "exampleFile", example)
 	}
 	if len(results) == 0 {
 		return nil, fmt.Errorf("no %s/TO_VERIFY findings returned for scan %s",
@@ -629,23 +636,63 @@ func (o *Orchestrator) buildFinding(res checkmarx.Result) (ai.Finding, int) {
 // paths so they resolve against the local checkout (Checkmarx pipeline scans may
 // nest the repo under extra directories, e.g. "/something/sast/<repo>"). Matching
 // is segment-aware: prefix "/a/sast" strips "/a/sast/x.go" but not "/a/sastx.go".
-// Returns the number of paths stripped.
+//
+// The prefix is normalized for Windows shells: backslashes are accepted, and a
+// drive-letter prefix (e.g. "C:/Program Files/Git/a/sast", which is what Git
+// Bash's MSYS path conversion turns "/a/sast" into) strips the longest trailing
+// run of its segments that leads the node path. Returns the number of paths
+// stripped.
 func stripPathPrefix(results []checkmarx.Result, prefix string) int {
-	prefix = "/" + strings.Trim(prefix, "/")
-	if prefix == "/" {
+	segs := prefixSegments(prefix)
+	if len(segs) == 0 {
 		return 0
 	}
+	driveRooted := isDriveSegment(segs[0])
 	stripped := 0
 	for ri := range results {
 		for ni := range results[ri].Nodes {
 			n := &results[ri].Nodes[ni]
-			if rest, ok := strings.CutPrefix(n.FileName, prefix+"/"); ok {
+			if rest, ok := cutPrefixSegments(n.FileName, segs, driveRooted); ok {
 				n.FileName = "/" + rest
 				stripped++
 			}
 		}
 	}
 	return stripped
+}
+
+// prefixSegments splits a strip prefix into its non-empty path segments,
+// treating backslashes as separators.
+func prefixSegments(prefix string) []string {
+	var segs []string
+	for s := range strings.SplitSeq(strings.ReplaceAll(strings.TrimSpace(prefix), `\`, "/"), "/") {
+		if s != "" {
+			segs = append(segs, s)
+		}
+	}
+	return segs
+}
+
+// isDriveSegment reports whether s is a Windows drive like "C:".
+func isDriveSegment(s string) bool {
+	return len(s) == 2 && s[1] == ':' && (s[0]|0x20) >= 'a' && (s[0]|0x20) <= 'z'
+}
+
+// cutPrefixSegments strips segs from the start of fileName on segment
+// boundaries. When anyTail is set, the longest trailing run of segs (at least
+// one segment) that fileName starts with is stripped instead of requiring all of
+// segs. Returns the remainder without a leading slash.
+func cutPrefixSegments(fileName string, segs []string, anyTail bool) (string, bool) {
+	first := 0
+	if anyTail {
+		first = len(segs) - 1
+	}
+	for i := 0; i <= first; i++ {
+		if rest, ok := strings.CutPrefix(fileName, "/"+strings.Join(segs[i:], "/")+"/"); ok {
+			return rest, true
+		}
+	}
+	return "", false
 }
 
 // dedupeBySimilarityID keeps the first result for each similarityID (in input

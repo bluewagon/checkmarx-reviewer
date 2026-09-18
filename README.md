@@ -183,6 +183,14 @@ If instead you keep `--repo-path` pointed directly at the checkout
 repo name too (`--strip-path-prefix /<extra-prefix>/<repo-name>`) — correct, but
 no longer reusable across repos with different names.
 
+**Windows:** the prefix may be written with backslashes (`\<extra-prefix>`). Git
+Bash rewrites POSIX-looking arguments and env vars into Windows paths (`/a/sast`
+becomes `C:/Program Files/Git/a/sast`); a drive-letter prefix like that is
+matched by its trailing segments, so it still works. To turn that rewriting off
+entirely, run with `MSYS_NO_PATHCONV=1`. If the prefix matches nothing, the run
+logs a `strip-path-prefix matched no result file paths` warning with an example
+node path.
+
 Not sure what Checkmarx is actually sending? Run with the default `--log-dir logs`
 and check `logs/<run>/checkmarx/` for the raw `/api/sast-results` response —
 look at any node's `fileName` directly rather than guessing.

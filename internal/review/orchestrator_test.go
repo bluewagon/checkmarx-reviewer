@@ -380,6 +380,12 @@ func TestStripPathPrefix(t *testing.T) {
 		{"segment boundary respected", "/something/sast", "/something/sastx/auth-api/x.go", "/something/sastx/auth-api/x.go"},
 		{"empty prefix no-op", "", "/something/sast/auth-api/x.go", "/something/sast/auth-api/x.go"},
 		{"slash-only prefix no-op", "/", "/something/sast/auth-api/x.go", "/something/sast/auth-api/x.go"},
+		{"backslash prefix", `\something\sast`, "/something/sast/auth-api/x.go", "/auth-api/x.go"},
+		{"msys-converted prefix", "C:/Program Files/Git/something/sast", "/something/sast/auth-api/x.go", "/auth-api/x.go"},
+		{"msys-converted backslash prefix", `C:\Program Files\Git\something\sast`, "/something/sast/auth-api/x.go", "/auth-api/x.go"},
+		{"drive prefix tail mismatch untouched", "C:/Program Files/Git/something/sast", "/other/auth-api/x.go", "/other/auth-api/x.go"},
+		{"drive prefix segment boundary respected", "C:/Git/something/sast", "/sastx/auth-api/x.go", "/sastx/auth-api/x.go"},
+		{"non-drive prefix needs full match", "/something/sast", "/sast/auth-api/x.go", "/sast/auth-api/x.go"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -431,6 +437,22 @@ func TestWarnsWhenNoSnippetsResolve(t *testing.T) {
 	// The repo root is an empty temp dir, so no node source can resolve.
 	if !strings.Contains(logs.String(), "no source snippets resolved") {
 		t.Errorf("expected unresolved-snippets warning in log:\n%s", logs.String())
+	}
+}
+
+func TestWarnsWhenStripPrefixMatchesNothing(t *testing.T) {
+	cx := &fakeCx{scan: &checkmarx.Scan{ProjectID: "proj-1"}, results: []checkmarx.Result{result(1)}}
+	var logs bytes.Buffer
+	o := New(cx, &fakeReviewer{v: ai.Verdict{Verdict: ai.VerdictTruePositive, Confidence: 0.9, Explanation: "x"}},
+		source.NewReader(t.TempDir(), 2), Options{
+			ScanID: "scan-1", Severities: []string{checkmarx.SeverityHigh}, Model: "claude-test",
+			BatchSize: 10, FPThreshold: 0.90, StripPathPrefix: "/does/not/match",
+		}, slog.New(slog.NewTextHandler(&logs, nil)))
+
+	run(t, o)
+
+	if !strings.Contains(logs.String(), "strip-path-prefix matched no result file paths") {
+		t.Errorf("expected unmatched-prefix warning in log:\n%s", logs.String())
 	}
 }
 
